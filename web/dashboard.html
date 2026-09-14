@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Macoran · API Kullanımı</title>
+<style>
+  :root{--bg:#0B0F14;--s1:#121821;--s2:#1A222E;--s3:#232D3B;--bd:#243041;--tx:#F1F5F9;--mu:#8B98AB;--dim:#5D6B7E;--pr:#22C55E;--rd:#EF4444;--wa:#F59E0B;--in:#38BDF8;--gold:#FBBF24}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:1100px;margin:0 auto;padding:24px 16px 48px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px}
+  h1{font-size:22px;margin:0;letter-spacing:-.3px}
+  h1 small{color:var(--mu);font-weight:500;font-size:13px;margin-left:8px}
+  .grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+  .card{background:var(--s1);border:1px solid var(--bd);border-radius:14px;padding:16px}
+  .card h3{margin:0 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--mu);font-weight:700}
+  .big{font-size:30px;font-weight:800;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
+  .sub{color:var(--mu);font-size:12px;margin-top:4px}
+  .bar{height:10px;background:var(--s3);border-radius:6px;overflow:hidden;margin-top:10px}
+  .bar i{display:block;height:100%;background:var(--pr);border-radius:6px;transition:width .4s}
+  .bar.warn i{background:var(--wa)} .bar.danger i{background:var(--rd)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:8px 6px;text-align:left;border-bottom:1px solid var(--bd)}
+  th{color:var(--mu);font-size:11px;text-transform:uppercase;letter-spacing:.6px;font-weight:700}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:var(--pr)} .dot.err{background:var(--rd)}
+  .chart{display:flex;align-items:flex-end;gap:3px;height:120px;margin-top:8px}
+  .chart div{flex:1;background:var(--in);border-radius:3px 3px 0 0;min-height:2px;position:relative}
+  .chart div:hover::after{content:attr(data-t);position:absolute;bottom:100%;left:50%;transform:translateX(-50%);background:var(--s3);padding:3px 6px;border-radius:5px;font-size:11px;white-space:nowrap;margin-bottom:4px}
+  .axis{display:flex;justify-content:space-between;color:var(--dim);font-size:10px;margin-top:4px}
+  button{background:var(--pr);color:#04140A;border:0;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}
+  button.ghost{background:var(--s3);color:var(--tx)}
+  input{width:100%;background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:12px;color:var(--tx);font-size:15px;margin-bottom:10px}
+  .login{max-width:380px;margin:80px auto}
+  .err{color:var(--rd);font-size:13px;margin-bottom:10px;min-height:18px}
+  .mono{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--mu)}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .hidden{display:none}
+  .span2{grid-column:span 2} @media(max-width:640px){.span2{grid-column:span 1}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="login" class="login card">
+    <h1 style="margin-bottom:6px">Macoran <small>Kullanım Paneli</small></h1>
+    <p class="sub" style="margin-bottom:16px">Sadece admin hesabı ile giriş yapılabilir.</p>
+    <input id="email" type="email" placeholder="E-posta" autocomplete="username">
+    <input id="pass" type="password" placeholder="Şifre" autocomplete="current-password">
+    <div id="lerr" class="err"></div>
+    <button id="lbtn" style="width:100%">Giriş Yap</button>
+  </div>
+
+  <div id="app" class="hidden">
+    <header>
+      <h1>Macoran <small>API-Football kullanımı</small></h1>
+      <div class="row">
+        <span id="stamp" class="mono"></span>
+        <button id="refresh" class="ghost">Yenile</button>
+        <button id="logout" class="ghost">Çıkış</button>
+      </div>
+    </header>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Bugün kullanılan (UTC)</h3>
+        <div class="big" id="used">–</div>
+        <div class="sub" id="usedSub"></div>
+        <div class="bar" id="bar"><i style="width:0%"></i></div>
+      </div>
+      <div class="card">
+        <h3>Kalan istek</h3>
+        <div class="big" id="left">–</div>
+        <div class="sub" id="leftSub"></div>
+      </div>
+      <div class="card">
+        <h3>Gün sonu tahmini</h3>
+        <div class="big" id="proj">–</div>
+        <div class="sub">bugünkü tempoya göre</div>
+      </div>
+      <div class="card">
+        <h3>Plan</h3>
+        <div class="big" id="plan" style="font-size:22px">–</div>
+        <div class="sub" id="planSub"></div>
+      </div>
+    </div>
+
+    <div class="grid" style="margin-top:12px">
+      <div class="card span2">
+        <h3>Son 24 saat · saatlik istek</h3>
+        <div class="chart" id="hourly"></div>
+        <div class="axis"><span id="h0"></span><span id="h1"></span></div>
+      </div>
+      <div class="card span2">
+        <h3>Son 7 gün · günlük istek</h3>
+        <div class="chart" id="daily"></div>
+        <div class="axis"><span id="d0"></span><span id="d1"></span></div>
+      </div>
+    </div>
+
+    <div class="grid" style="margin-top:12px">
+      <div class="card span2">
+        <h3>Bugün görev bazında</h3>
+        <table><thead><tr><th>Görev</th><th class="num">Çalışma</th><th class="num">İstek</th><th class="num">Hata</th><th>Son çalışma</th></tr></thead><tbody id="jobs"></tbody></table>
+      </div>
+      <div class="card">
+        <h3>Veritabanı</h3>
+        <table><tbody id="db"></tbody></table>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h3>Son hatalar</h3>
+      <div id="errors" class="mono">Hata yok 🎉</div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+  import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+  const sb = createClient("https://wnyffuvbrnuysqqytmel.supabase.co", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndueWZmdXZicm51eXNxcXl0bWVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzA2MDIsImV4cCI6MjEwNDY0NjYwMn0.l1JHhOwyjH_Ie1BvVVJRLKQOekuJDlOQm5fyaOdyPEk");
+  const $ = (id) => document.getElementById(id);
+  const fmt = (n) => Number(n ?? 0).toLocaleString("tr-TR");
+  const ago = (iso) => { const s = Math.max(0,(Date.now()-new Date(iso))/1000); return s<60?Math.round(s)+" sn önce":s<3600?Math.round(s/60)+" dk önce":Math.round(s/3600)+" sa önce"; };
+
+  async function load() {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) return show(false);
+    $("refresh").textContent = "Yükleniyor…";
+    const res = await fetch("https://wnyffuvbrnuysqqytmel.supabase.co" + "/functions/v1/usage", { headers: { Authorization: "Bearer " + session.access_token } });
+    $("refresh").textContent = "Yenile";
+    if (res.status === 401) { await sb.auth.signOut(); $("lerr").textContent = "Bu hesap admin değil."; return show(false); }
+    const d = await res.json();
+    if (d.error) { alert(d.error); return; }
+    render(d); show(true);
+  }
+
+  function show(ok) { $("login").classList.toggle("hidden", ok); $("app").classList.toggle("hidden", !ok); }
+
+  function chart(el, items, key, labelFn, a0, a1) {
+    const max = Math.max(1, ...items.map(i => i.requests));
+    el.innerHTML = items.map(i => '<div style="height:' + Math.max(2, Math.round(i.requests / max * 100)) + '%" data-t="' + labelFn(i[key]) + ' · ' + fmt(i.requests) + '"></div>').join("");
+    $(a0).textContent = labelFn(items[0]?.[key]); $(a1).textContent = labelFn(items.at(-1)?.[key]);
+  }
+
+  function render(d) {
+    const r = d.api?.requests ?? { current: 0, limit_day: 0 };
+    const pct = r.limit_day ? r.current / r.limit_day * 100 : 0;
+    $("used").textContent = fmt(r.current);
+    $("usedSub").textContent = "limit " + fmt(r.limit_day) + " · %" + pct.toFixed(1) + " · loglara göre " + fmt(d.today_logged);
+    const bar = $("bar"); bar.className = "bar" + (pct > 90 ? " danger" : pct > 70 ? " warn" : ""); bar.firstElementChild.style.width = Math.min(100, pct) + "%";
+    $("left").textContent = fmt(r.limit_day - r.current);
+    const resetIn = (24*60 - (new Date().getUTCHours()*60 + new Date().getUTCMinutes()));
+    $("leftSub").textContent = "kota " + Math.floor(resetIn/60) + " sa " + (resetIn%60) + " dk sonra sıfırlanır (00:00 UTC)";
+    $("proj").textContent = d.projected_today == null ? "–" : fmt(d.projected_today);
+    $("plan").textContent = d.api?.subscription?.plan ?? "–";
+    $("planSub").textContent = d.api ? (d.api.subscription.active ? "aktif · bitiş " : "pasif · ") + new Date(d.api.subscription.end).toLocaleDateString("tr-TR") + " · " + d.api.account.email : "";
+    chart($("hourly"), d.hourly, "hour", h => h ? new Date(h + ":00:00Z").toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit"}) : "", "h0", "h1");
+    chart($("daily"), d.daily, "day", x => x ? new Date(x).toLocaleDateString("tr-TR",{day:"numeric",month:"short"}) : "", "d0", "d1");
+    const jobs = ["sim-tick","sim-admin"];
+    $("jobs").innerHTML = jobs.map(j => { const s = d.per_job_today[j] ?? {runs:0,requests:0,errors:0}; const lr = d.last_run[j];
+      return '<tr><td><span class="dot ' + (lr && !lr.ok ? "err" : "") + '"></span>' + j + '</td><td class="num">' + fmt(s.runs) + '</td><td class="num">' + fmt(s.requests) + '</td><td class="num" style="color:' + (s.errors ? "var(--rd)" : "inherit") + '">' + fmt(s.errors) + '</td><td class="mono">' + (lr ? ago(lr.created_at) + " · " + lr.message : "—") + '</td></tr>'; }).join("");
+    const db = d.db; $("db").innerHTML = [["Maç", db.fixtures],["Canlı maç", db.live],["Oran satırı", db.odds],["Kullanıcı", db.users],["Kupon", db.bets],["Açık kupon", db.open_bets]].map(([k,v]) => '<tr><td>' + k + '</td><td class="num">' + fmt(v) + '</td></tr>').join("");
+    $("errors").innerHTML = d.errors.length ? d.errors.map(e => '<div style="margin-bottom:6px"><span style="color:var(--rd)">' + new Date(e.created_at).toLocaleString("tr-TR") + '</span> · <b>' + e.job + '</b> · ' + e.message + '</div>').join("") : "Hata yok 🎉";
+    $("stamp").textContent = "güncellendi " + new Date(d.generated_at).toLocaleTimeString("tr-TR");
+  }
+
+  $("lbtn").onclick = async () => {
+    $("lerr").textContent = ""; $("lbtn").textContent = "…";
+    const { error } = await sb.auth.signInWithPassword({ email: $("email").value.trim(), password: $("pass").value });
+    $("lbtn").textContent = "Giriş Yap";
+    if (error) { $("lerr").textContent = "E-posta veya şifre hatalı."; return; }
+    load();
+  };
+  $("pass").onkeydown = (e) => { if (e.key === "Enter") $("lbtn").click(); };
+  $("refresh").onclick = load;
+  $("logout").onclick = async () => { await sb.auth.signOut(); show(false); };
+  setInterval(() => { if (!$("app").classList.contains("hidden")) load(); }, 5 * 60 * 1000);
+  load();
+</script>
+</body>
+</html>
