@@ -249,6 +249,33 @@ export function useStandings(leagueId: number | null) {
   });
 }
 
+export type LeagueFixture = Pick<
+  FixtureWithRelations,
+  'id' | 'date' | 'round' | 'status_short' | 'elapsed' | 'home_goals' | 'away_goals' | 'home' | 'away'
+>;
+
+/** Ligin sezon fikstürü (tarih/saat, skor). */
+export function useLeagueFixtures(leagueId: number | null) {
+  return useQuery({
+    queryKey: ['fixtures', 'league', leagueId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('fixtures')
+        .select(
+          'id, date, round, status_short, elapsed, home_goals, away_goals, home:teams!home_team_id(id, name, logo), away:teams!away_team_id(id, name, logo)',
+        )
+        .eq('league_id', leagueId!)
+        .eq('archived', false)
+        .order('date');
+      if (error) throw error;
+      return (data ?? []) as unknown as LeagueFixture[];
+    },
+    enabled: !!leagueId,
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+  });
+}
+
 /** Ligin o an oynanan maçları (canlı puan durumu için). */
 export function useLeagueLiveFixtures(leagueId: number | null) {
   return useQuery({

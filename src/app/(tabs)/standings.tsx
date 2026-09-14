@@ -1,13 +1,23 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
-import { useMemo, useState } from 'react';
-import { FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { FlatList, Pressable, ScrollView, SectionList, StyleSheet, Text, View } from 'react-native';
 
 import { TeamLogo } from '@/components/TeamLogo';
 import { filterLeagues } from '@/components/LeaguePicker';
 import { Badge, EmptyState, Header, IconButton, Input, Loading, Muted, Screen } from '@/components/ui';
-import { ago } from '@/lib/format';
-import { type PlayerStatRow, useLeagueLiveFixtures, useLeagues, usePlayerStats, useStandings } from '@/lib/queries';
+import { ago, dateShort, dayjs, dayLabel, time } from '@/lib/format';
+import { isFinished, isLive, statusLabel } from '@/lib/markets';
+import {
+  type LeagueFixture,
+  type PlayerStatRow,
+  useLeagueFixtures,
+  useLeagueLiveFixtures,
+  useLeagues,
+  usePlayerStats,
+  useStandings,
+} from '@/lib/queries';
 import { overlayLiveStandings, type LiveStandingRow } from '@/lib/standings';
 import { colors, radius, spacing } from '@/lib/theme';
 import type { League, StandingRow } from '@/types/db';
@@ -74,11 +84,12 @@ function LeagueItem({ league, onPress }: { league: League; onPress: () => void }
   );
 }
 
-type LeagueTab = 'table' | 'goals' | 'assists';
+type LeagueTab = 'table' | 'fixtures' | 'goals' | 'assists';
 const LEAGUE_TABS: { key: LeagueTab; label: string }[] = [
-  { key: 'table', label: 'Puan Durumu' },
-  { key: 'goals', label: 'Gol Krallığı' },
-  { key: 'assists', label: 'Asist Krallığı' },
+  { key: 'table', label: 'Puan' },
+  { key: 'fixtures', label: 'Fikstür' },
+  { key: 'goals', label: 'Goller' },
+  { key: 'assists', label: 'Asistler' },
 ];
 
 function LeagueTable({ league, onBack }: { league: League; onBack: () => void }) {
@@ -107,8 +118,10 @@ function LeagueTable({ league, onBack }: { league: League; onBack: () => void })
         ))}
       </View>
 
-      {tab !== 'table' ? (
+      {tab === 'goals' || tab === 'assists' ? (
         <PlayerRanking leagueId={league.id} kind={tab} />
+      ) : tab === 'fixtures' ? (
+        <LeagueFixtures leagueId={league.id} />
       ) : isLoading ? (
         <Loading />
       ) : !data?.data?.length ? (
@@ -170,6 +183,121 @@ function LeagueTable({ league, onBack }: { league: League; onBack: () => void })
         </ScrollView>
       )}
     </Screen>
+  );
+}
+
+function LeagueFixtures({ leagueId }: { leagueId: number }) {
+  const router = useRouter();
+  const listRef = useRef<SectionList<LeagueFixture>>(null);
+  const { data = [], isLoading } = useLeagueFixtures(leagueId);
+  const sections = useMemo(() => {
+    const map = new Map<string, LeagueFixture[]>();
+    for (const f of data) {
+      const key = f.round?.trim() || 'Fikstür';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(f);
+    }
+    return [...map.entries()].map(([title, rows]) => ({ title, data: rows }));
+  }, [data]);
+
+  useEffect(() => {
+    if (!sections.length) return;
+    let idx = sections.findIndex((s) => s.data.some((f) => isLive(f.status_short)));
+    if (idx < 0) idx = sections.findIndex((s) => s.data.some((f) => f.status_short === 'NS'));
+    if (idx < 0) idx = Math.max(0, sections.length - 1);
+    const t = setTimeout(() => {
+      try {
+        listRef.current?.scrollToLocation({ sectionIndex: idx, itemIndex: 0, viewOffset: 8, animated: false });
+      } catch {
+        /* SectionList henüz ölçülmemiş olabilir */
+      }
+    }, 80);
+    return () => clearTimeout(t);
+  }, [sections]);
+
+  if (isLoading) return <Loading />;
+  if (!sections.length) {
+    return (
+      <EmptyState
+        icon="calendar-outline"
+        title="Fikstür henüz yok"
+        subtitle="Lig başlatıldığında maçlar tarih ve saatleriyle burada görünür."
+      />
+    );
+  }
+
+  return (
+    <SectionList
+      ref={listRef}
+      sections={sections}
+      keyExtractor={(item) => String(item.id)}
+      stickySectionHeadersEnabled
+      contentContainerStyle={{ padding: spacing.lg, paddingBottom: 40 }}
+      onScrollToIndexFailed={() => undefined}
+      renderSectionHeader={({ section }) => (
+        <View style={styles.fxRound}>
+          <Text style={styles.fxRoundTitle}>{section.title}</Text>
+          <Muted style={{ fontSize: 11 }}>{section.data.length} maç</Muted>
+        </View>
+      )}
+      renderItem={({ item, index, section }) => {
+        const prev = section.data[index - 1];
+        const showDay = !prev || !dayjs(item.date).isSame(prev.date, 'day');
+        return (
+          <View>
+            {showDay ? (
+              <Text style={styles.fxDay}>
+                {dayLabel(dayjs(item.date))} · {dateShort(item.date)}
+              </Text>
+            ) : null}
+            <FixtureRow fixture={item} onPress={() => router.push(`/match/${item.id}`)} />
+          </View>
+        );
+      }}
+    />
+  );
+}
+
+function FixtureRow({ fixture: f, onPress }: { fixture: LeagueFixture; onPress: () => void }) {
+  const live = isLive(f.status_short);
+  const finished = isFinished(f.status_short);
+  const scoreShown = live || finished || f.home_goals !== null;
+  return (
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.fxRow, live && styles.liveRow, pressed && { opacity: 0.85 }]}>
+      <View style={styles.fxWhen}>
+        {live ? (
+          <Badge text={statusLabel(f.status_short, f.elapsed)} color="rgba(239,68,68,0.15)" textColor={colors.live} />
+        ) : finished ? (
+          <Text style={styles.fxTimeMuted}>MS</Text>
+        ) : (
+          <Text style={styles.fxTime}>{time(f.date)}</Text>
+        )}
+      </View>
+      <View style={styles.fxTeams}>
+        <View style={styles.fxTeam}>
+          <TeamLogo uri={f.home.logo} size={20} name={f.home.name} />
+          <Text style={[styles.fxName, finished && (f.home_goals ?? 0) < (f.away_goals ?? 0) && styles.fxLoser]} numberOfLines={1}>
+            {f.home.name}
+          </Text>
+        </View>
+        <View style={styles.fxTeam}>
+          <TeamLogo uri={f.away.logo} size={20} name={f.away.name} />
+          <Text style={[styles.fxName, finished && (f.away_goals ?? 0) < (f.home_goals ?? 0) && styles.fxLoser]} numberOfLines={1}>
+            {f.away.name}
+          </Text>
+        </View>
+      </View>
+      <View style={styles.fxScoreCol}>
+        {scoreShown ? (
+          <>
+            <Text style={[styles.fxScore, live && { color: colors.live }]}>{f.home_goals ?? 0}</Text>
+            <Text style={[styles.fxScore, live && { color: colors.live }]}>{f.away_goals ?? 0}</Text>
+          </>
+        ) : (
+          <Text style={styles.fxVs}>–</Text>
+        )}
+      </View>
+    </Pressable>
   );
 }
 
@@ -303,9 +431,41 @@ const styles = StyleSheet.create({
   },
   tab: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: radius.sm },
   tabActive: { backgroundColor: colors.surface3 },
-  tabText: { color: colors.textMuted, fontSize: 12, fontWeight: '600' },
+  tabText: { color: colors.textMuted, fontSize: 11, fontWeight: '600' },
   tabTextActive: { color: colors.text, fontWeight: '800' },
   playerHead: { borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border },
   playerRow: { backgroundColor: colors.surface, borderLeftWidth: StyleSheet.hairlineWidth, borderRightWidth: StyleSheet.hairlineWidth, borderColor: colors.border },
   playerLast: { borderBottomLeftRadius: radius.lg, borderBottomRightRadius: radius.lg, borderBottomWidth: StyleSheet.hairlineWidth },
+  fxRound: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: colors.bg,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.xs,
+  },
+  fxRoundTitle: { color: colors.text, fontSize: 15, fontWeight: '800' },
+  fxDay: { color: colors.textMuted, fontSize: 12, fontWeight: '700', marginTop: spacing.sm, marginBottom: 6 },
+  fxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    paddingVertical: 10,
+    paddingHorizontal: spacing.sm,
+    marginBottom: 6,
+  },
+  fxWhen: { width: 52, alignItems: 'center' },
+  fxTime: { color: colors.text, fontSize: 13, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  fxTimeMuted: { color: colors.textMuted, fontSize: 11, fontWeight: '700' },
+  fxTeams: { flex: 1, gap: 6 },
+  fxTeam: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  fxName: { color: colors.text, fontSize: 13, fontWeight: '600', flex: 1 },
+  fxLoser: { color: colors.textMuted },
+  fxScoreCol: { width: 28, alignItems: 'flex-end', gap: 6 },
+  fxScore: { color: colors.text, fontSize: 14, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  fxVs: { color: colors.textDim, fontSize: 14, fontWeight: '700' },
 });
