@@ -63,6 +63,7 @@ export default function RootLayout() {
               <Stack.Screen name="admin/index" />
               <Stack.Screen name="admin/[userId]" />
               <Stack.Screen name="admin/sim" />
+              <Stack.Screen name="admin/live" />
               <Stack.Screen name="admin/scenario/[leagueId]" />
             </Stack.Protected>
             <Stack.Protected guard={!session}>

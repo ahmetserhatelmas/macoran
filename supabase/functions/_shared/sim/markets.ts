@@ -119,3 +119,129 @@ export function settleSelection(code: string, selection: string, line: number, f
   if (w === null) return "void";           // push
   return w.includes(selection) ? "won" : "lost";
 }
+
+export type MatchPhase = "1H" | "HT" | "2H";
+
+function ouEarly(current: number, line: number, frozen: boolean, sel: string): SelStatus | null {
+  if (sel !== "O" && sel !== "U") return null;
+  if (current > line) return sel === "O" ? "won" : "lost";
+  if (!frozen) return null;
+  if (current === line) return "void";
+  return sel === "U" ? "won" : "lost";
+}
+
+function ynEarly(yesCertain: boolean, noCertain: boolean, sel: string): SelStatus | null {
+  if (sel === "YES") return yesCertain ? "won" : noCertain ? "lost" : null;
+  if (sel === "NO") return noCertain ? "won" : yesCertain ? "lost" : null;
+  return null;
+}
+
+function csEarly(h: number, a: number, sel: string, max: number, frozen: boolean): SelStatus | null {
+  if (frozen) {
+    const w = h <= max && a <= max ? `${h}-${a}` : "OTHER";
+    return sel === w ? "won" : "lost";
+  }
+  if (h > max || a > max) return sel === "OTHER" ? "won" : "lost";
+  if (sel === "OTHER") return null;
+  const m = /^(\d+)-(\d+)$/.exec(sel);
+  if (!m) return null;
+  if (h > Number(m[1]) || a > Number(m[2])) return "lost";
+  return null;
+}
+
+/**
+ * Maç bitmeden kesinleşen seçim: gol sayısı yalnızca artar.
+ *  - 2.5 Üst, toplam 3 olunca kazanır; 2.5 Alt aynı anda kaybeder
+ *  - KG Var, iki taraf da gol atınca kazanır; KG Yok kaybeder
+ * Henüz iki yöne de açık olanlar (MS, ilk yarı bitmeden İY sonucu) null kalır.
+ */
+export function earlySettleSelection(
+  code: string,
+  selection: string,
+  line: number,
+  f: Facts,
+  phase: MatchPhase,
+): SelStatus | null {
+  const htDone = phase !== "1H";
+  const h = f.h1 + f.h2, a = f.a1 + f.a2;
+  const g1 = f.h1 + f.a1, g2 = f.h2 + f.a2;
+
+  switch (code) {
+    case "OU":
+    case "HOU":
+    case "AOU":
+    case "CORNOU":
+      return ouEarly(OU_TOTAL[code](f), line, false, selection);
+    case "HTOU":
+    case "HTHOU":
+    case "HTAOU":
+    case "HTCORNOU":
+      return ouEarly(OU_TOTAL[code](f), line, htDone, selection);
+    case "BTTS":
+      return ynEarly(h > 0 && a > 0, false, selection);
+    case "HTBTTS":
+      return ynEarly(f.h1 > 0 && f.a1 > 0, htDone && !(f.h1 > 0 && f.a1 > 0), selection);
+    case "2HBTTS":
+      return phase === "2H" ? ynEarly(f.h2 > 0 && f.a2 > 0, false, selection) : null;
+    case "PEN":
+      return ynEarly(f.penalty, false, selection);
+    case "CS":
+      return csEarly(h, a, selection, 3, false);
+    case "HTCS":
+      return csEarly(f.h1, f.a1, selection, 2, htDone);
+    case "HT1X2":
+    case "HTDC":
+      return htDone ? settleSelection(code, selection, line, f) : null;
+    case "HTFT": {
+      if (!htDone) return null;
+      const prefix = `${res(f.h1, f.a1)}/`;
+      return selection.startsWith(prefix) ? null : "lost";
+    }
+    case "1X2OU": {
+      const over = h + a > line;
+      if (selection.endsWith("U") && over) return "lost";
+      return null;
+    }
+    case "1X2BTTS": {
+      const btts = h > 0 && a > 0;
+      if (selection.endsWith("NO") && btts) return "lost";
+      return null;
+    }
+    case "OUBTTS": {
+      const over = h + a > line;
+      const btts = h > 0 && a > 0;
+      if (selection === "OYES" && over && btts) return "won";
+      if (selection === "ONO" && btts) return "lost";
+      if (selection === "UYES" && over) return "lost";
+      if (selection === "UNO" && (over || btts)) return "lost";
+      return null;
+    }
+    case "HMG":
+      if (phase === "2H" && g2 > g1) return selection === "2H" ? "won" : "lost";
+      return null;
+    case "HSBH":
+      return ynEarly(f.h1 > 0 && f.h2 > 0, htDone && f.h1 === 0, selection);
+    case "ASBH":
+      return ynEarly(f.a1 > 0 && f.a2 > 0, htDone && f.a1 === 0, selection);
+    case "HWH":
+      return ynEarly((htDone && f.h1 > f.a1) || (phase === "2H" && f.h2 > f.a2), false, selection);
+    case "AWH":
+      return ynEarly((htDone && f.a1 > f.h1) || (phase === "2H" && f.a2 > f.h2), false, selection);
+    case "HWBH":
+      return ynEarly(htDone && f.h1 > f.a1 && f.h2 > f.a2, htDone && !(f.h1 > f.a1), selection);
+    case "AWBH":
+      return ynEarly(htDone && f.a1 > f.h1 && f.a2 > f.h2, htDone && !(f.a1 > f.h1), selection);
+    case "BHBTTS":
+      return ynEarly(
+        f.h1 > 0 && f.a1 > 0 && f.h2 > 0 && f.a2 > 0,
+        htDone && !(f.h1 > 0 && f.a1 > 0),
+        selection,
+      );
+    case "BHU15":
+      return ynEarly(false, g1 >= 2 || (phase === "2H" && g2 >= 2), selection);
+    case "BHO15":
+      return ynEarly(g1 >= 2 && g2 >= 2, htDone && g1 < 2, selection);
+    default:
+      return null;
+  }
+}

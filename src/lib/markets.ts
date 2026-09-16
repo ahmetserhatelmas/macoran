@@ -9,6 +9,35 @@ export const isFinished = (s: string) => FINISHED_STATUSES.includes(s);
 export const isOpen = (s: string) => OPEN_STATUSES.includes(s);
 export const canBet = (s: string) => isLive(s) || isOpen(s);
 
+/** Canlıda gol/penaltı kilidi: live_odds_at null iken kupon kabul edilmez. */
+export const liveBettingLocked = (status: string, liveOddsAt?: string | null) =>
+  isLive(status) && !liveOddsAt;
+
+/** Skorla kesinleşen iki yönlü pazarları gizle (2-0'da 0.5/1.5 Alt kalmasın). */
+export function hideDecidedOdds(
+  odds: Odd[],
+  f: { status_short: string; home_goals: number | null; away_goals: number | null; ht_home?: number | null; ht_away?: number | null },
+): Odd[] {
+  if (!isLive(f.status_short)) return odds;
+  const h = f.home_goals ?? 0, a = f.away_goals ?? 0, g = h + a;
+  const h1 = f.ht_home, a1 = f.ht_away;
+  const g1 = h1 != null && a1 != null ? h1 + a1 : null;
+  return odds.filter((o) => {
+    const line = Number(o.line);
+    switch (o.market) {
+      case 'OU': return g <= line;
+      case 'HOU': return h <= line;
+      case 'AOU': return a <= line;
+      case 'HTOU': return g1 == null || g1 <= line;
+      case 'HTHOU': return h1 == null || h1 <= line;
+      case 'HTAOU': return a1 == null || a1 <= line;
+      case 'BTTS': return !(h > 0 && a > 0);
+      case 'HTBTTS': return !(h1 != null && a1 != null && h1 > 0 && a1 > 0);
+      default: return true;
+    }
+  });
+}
+
 /** Pazar kodu -> başlık. Sıra, maç detayındaki görüntüleme sırasıdır. */
 export const MARKET_LABELS: Record<string, string> = {
   '1X2': 'Maç Sonucu',

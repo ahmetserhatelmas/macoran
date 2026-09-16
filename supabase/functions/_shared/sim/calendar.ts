@@ -1,5 +1,6 @@
 // Gerçek sezon fikstürü + ligin tipik maç günlerine göre tahmin.
 // API tarihleri start_at'e haftalık hizalanır (gün/saat korunur).
+// UEFA kulüp kupaları (2/3/848) Salı–Çarşamba–Perşembe'ye kilitlenir.
 // Tarihi belirsiz veya hiç yayınlanmamış haftalar ritme göre doldurulur.
 
 import type { ApiFixture } from "../api.ts";
@@ -57,6 +58,12 @@ const MID_UCL: Slot[] = [
   { dow: 2, hour: 21, minute: 0 },
   { dow: 3, hour: 18, minute: 45 },
   { dow: 3, hour: 21, minute: 0 },
+];
+/** Şampiyonlar / Avrupa / Konferans: Salı–Perşembe */
+const MID_UEFA: Slot[] = [
+  ...MID_UCL,
+  { dow: 4, hour: 18, minute: 45 },
+  { dow: 4, hour: 21, minute: 0 },
 ];
 
 const TZ = {
@@ -239,21 +246,9 @@ const RHYTHM: Record<number, Rhythm> = {
   },
   292: { tz: TZ.kr, weekGapDays: 7, slots: SAT_SUN },
   419: { tz: TZ.az, weekGapDays: 7, slots: SAT_SUN.concat([{ dow: 5, hour: 20, minute: 0 }]) },
-  2: { tz: TZ.eu, weekGapDays: 14, slots: MID_UCL },
-  3: {
-    tz: TZ.eu, weekGapDays: 14,
-    slots: [
-      { dow: 4, hour: 18, minute: 45 },
-      { dow: 4, hour: 21, minute: 0 },
-    ],
-  },
-  848: {
-    tz: TZ.eu, weekGapDays: 14,
-    slots: [
-      { dow: 4, hour: 18, minute: 45 },
-      { dow: 4, hour: 21, minute: 0 },
-    ],
-  },
+  2: { tz: TZ.eu, weekGapDays: 14, slots: MID_UEFA },
+  3: { tz: TZ.eu, weekGapDays: 14, slots: MID_UEFA },
+  848: { tz: TZ.eu, weekGapDays: 14, slots: MID_UEFA },
   13: { tz: TZ.br, weekGapDays: 14, slots: MID_UCL },
 };
 
@@ -278,6 +273,27 @@ export function isCupLeague(leagueId: number): boolean {
   return CUPS.has(leagueId);
 }
 
+/** UEFA kulüp kupaları: Salı / Çarşamba / Perşembe */
+export function isUefaClubCup(leagueId: number): boolean {
+  return leagueId === 2 || leagueId === 3 || leagueId === 848;
+}
+
+/**
+ * Kupa ana aşaması: lig/grup. Ön eleme, play-off ve eleme turları dışarıda.
+ * UCL/UEL/UECL "League Stage", Libertadores "Group Stage".
+ */
+export function isCupMainStageRound(raw: string | null | undefined): boolean {
+  if (!raw) return false;
+  if (/qualif|preliminary|pre.?elim/i.test(raw)) return false;
+  if (/knockout|round of\s*\d+|8th final|quarter-?final|semi-?final|(?:^|\s)finals?$/i.test(raw)) return false;
+  if (/play-?offs?/i.test(raw)) return false;
+  return true;
+}
+
+export function filterCupMainFixtures<T extends { league?: { round?: string | null } | null }>(fixtures: T[]): T[] {
+  return fixtures.filter((f) => isCupMainStageRound(f.league?.round ?? ""));
+}
+
 export function parseRoundNum(raw: string | null | undefined): number | null {
   if (!raw) return null;
   const m = raw.match(/(?:regular season|regular season\s*-|hafta|matchday|jornada|round|spieltag)\s*-?\s*(\d+)/i)
@@ -299,8 +315,13 @@ export function displayRound(raw: string | null | undefined, fallback: number): 
 function expandSlots(r: Rhythm, n: number): Slot[] {
   const out = [...r.slots];
   if (r.midweek) out.push(...r.midweek);
+  const uefaOnly = !r.midweek && r.slots.length > 0 && r.slots.every((s) => s.dow >= 2 && s.dow <= 4);
   let i = 0;
   while (out.length < n) {
+    if (uefaOnly) {
+      out.push(r.slots[out.length % r.slots.length]);
+      continue;
+    }
     const base = r.slots[i % r.slots.length];
     const bump = 150 * (1 + Math.floor(i / r.slots.length));
     let minute = base.minute + bump;
@@ -363,6 +384,53 @@ function alignShift(first: Date, startAt: Date): number {
   let aligned = startMid + addDays * DAY + tod;
   if (aligned < startAt.getTime()) aligned += 7 * DAY;
   return aligned - first.getTime();
+}
+
+const TR_MS = 180 * 60_000;
+
+function trParts(d: Date) {
+  const t = new Date(d.getTime() + TR_MS);
+  return {
+    y: t.getUTCFullYear(), mo: t.getUTCMonth(), da: t.getUTCDate(),
+    dow: t.getUTCDay(), h: t.getUTCHours(), mi: t.getUTCMinutes(),
+  };
+}
+
+function atTr(y: number, mo: number, da: number, h: number, mi: number) {
+  return new Date(Date.UTC(y, mo, da, h, mi) - TR_MS);
+}
+
+function isUefaDow(dow: number) {
+  return dow === 2 || dow === 3 || dow === 4;
+}
+
+/** İlk maçın Salı/Çar/Per gününü koru; sezon başlangıcından sonraki ilk o güne hizala. */
+function alignUefaShift(first: Date, startAt: Date): number {
+  const p = trParts(first);
+  const want = isUefaDow(p.dow) ? p.dow : 2;
+  const s = trParts(startAt);
+  let d = atTr(s.y, s.mo, s.da, p.h, p.mi);
+  for (let i = 0; i < 14; i++) {
+    if (trParts(d).dow === want && d.getTime() >= startAt.getTime() - 60_000) break;
+    d = new Date(d.getTime() + 86400_000);
+  }
+  return d.getTime() - first.getTime();
+}
+
+export function snapToUefaMidweek(d: Date): Date {
+  const p = trParts(d);
+  const h = p.h >= 17 ? p.h : 21;
+  const mi = p.h >= 17 ? p.mi : 0;
+  if (isUefaDow(p.dow)) return atTr(p.y, p.mo, p.da, h, mi);
+  const add = ((2 - p.dow + 7) % 7) || 7;
+  return atTr(p.y, p.mo, p.da + add, h, mi);
+}
+
+function nextUefaSlot(t: number): number {
+  const p = trParts(new Date(t));
+  if (p.dow === 2) return atTr(p.y, p.mo, p.da + 1, p.h, p.mi).getTime();
+  if (p.dow === 3) return atTr(p.y, p.mo, p.da + 1, p.h, p.mi).getTime();
+  return atTr(p.y, p.mo, p.da + ((2 - p.dow + 7) % 7 || 7), p.h, p.mi).getTime();
 }
 
 interface RawRow {
@@ -480,7 +548,8 @@ export function planFromApiFixtures(
   seed: number,
 ): CalendarResult | null {
   const known = new Set(teamIds);
-  const rows = usableApiRows(fixtures, known);
+  let rows = usableApiRows(fixtures, known);
+  if (isCupLeague(leagueId)) rows = rows.filter((r) => isCupMainStageRound(r.roundRaw));
   if (rows.length < Math.max(4, Math.floor(teamIds.length / 2))) return null;
 
   const groups = new Map<string, RawRow[]>();
@@ -530,8 +599,11 @@ export function planFromApiFixtures(
   planned.sort((a, b) => a.date.getTime() - b.date.getTime());
   const anchor = planned.find((m) => !m.estimated) ?? planned[0];
   if (!anchor) return null;
-  const shift = alignShift(anchor.date, startAt);
-  for (const m of planned) m.date = new Date(m.date.getTime() + shift);
+  const shift = isUefaClubCup(leagueId) ? alignUefaShift(anchor.date, startAt) : alignShift(anchor.date, startAt);
+  for (const m of planned) {
+    m.date = new Date(m.date.getTime() + shift);
+    if (isUefaClubCup(leagueId)) m.date = snapToUefaMidweek(m.date);
+  }
   return { matches: planned, source: "api", estimated: planned.filter((m) => m.estimated).length };
 }
 
@@ -564,8 +636,59 @@ export function planFromRhythm(
   });
   matches.sort((a, b) => a.date.getTime() - b.date.getTime());
   if (matches[0]) {
-    const shift = alignShift(matches[0].date, start);
-    for (const m of matches) m.date = new Date(m.date.getTime() + shift);
+    const shift = isUefaClubCup(leagueId) ? alignUefaShift(matches[0].date, start) : alignShift(matches[0].date, start);
+    for (const m of matches) {
+      m.date = new Date(m.date.getTime() + shift);
+      if (isUefaClubCup(leagueId)) m.date = snapToUefaMidweek(m.date);
+    }
   }
   return { matches, source: "rhythm", estimated: matches.length };
+}
+
+const MIN_REST_MS = 36 * 3600_000;
+
+function localDayKey(d: Date): string {
+  const t = new Date(d.getTime() + TR_MS);
+  return `${t.getUTCFullYear()}-${t.getUTCMonth()}-${t.getUTCDate()}`;
+}
+
+/**
+ * Aynı takım lig + kupa (veya iki kupa) aynı gün / 36 saatten yakın oynamasın.
+ * Lig maçı +7 gün kayar (gün/saat korunur). UEFA kupası Salı→Çar→Per→sonraki Salı.
+ */
+export function resolveTeamClashes(
+  matches: PlannedMatch[],
+  busy: { teamId: number; date: Date }[],
+  opts?: { uefa?: boolean },
+): PlannedMatch[] {
+  const byTeam = new Map<number, number[]>();
+  const add = (id: number, t: number) => {
+    const arr = byTeam.get(id) ?? [];
+    arr.push(t);
+    byTeam.set(id, arr);
+  };
+  for (const b of busy) add(b.teamId, b.date.getTime());
+
+  const clashes = (id: number, t: number) => {
+    const day = localDayKey(new Date(t));
+    for (const u of byTeam.get(id) ?? []) {
+      if (Math.abs(u - t) < MIN_REST_MS) return true;
+      if (localDayKey(new Date(u)) === day) return true;
+    }
+    return false;
+  };
+
+  const WEEK = 7 * 86400_000;
+  const bump = (t: number) => (opts?.uefa ? nextUefaSlot(t) : t + WEEK);
+  const out = matches.map((m) => ({ ...m, date: new Date(m.date.getTime()) }));
+  out.sort((a, b) => a.date.getTime() - b.date.getTime());
+  for (const m of out) {
+    let t = opts?.uefa ? snapToUefaMidweek(m.date).getTime() : m.date.getTime();
+    for (let i = 0; i < 16 && (clashes(m.home, t) || clashes(m.away, t)); i++) t = bump(t);
+    m.date = new Date(t);
+    add(m.home, t);
+    add(m.away, t);
+  }
+  out.sort((a, b) => a.date.getTime() - b.date.getTime());
+  return out;
 }

@@ -12,6 +12,7 @@ import { dayjs } from '@/lib/format';
 import { useFixturesByDate, useLeagues, useLiveFixtures } from '@/lib/queries';
 import { colors, spacing } from '@/lib/theme';
 import { useBetslip } from '@/store/betslip';
+import { useFavorites } from '@/store/favorites';
 import type { FixtureWithRelations } from '@/types/db';
 
 export default function MatchesScreen() {
@@ -36,17 +37,23 @@ export default function MatchesScreen() {
     if (fixtures) syncOdds(fixtures.flatMap((f) => f.odds));
   }, [fixtures, syncOdds]);
 
+  const favIds = useFavorites((s) => s.ids);
   const sections = useMemo(() => {
     if (!fixtures) return [];
+    const fav = new Set(favIds);
+    const favored = fixtures.filter((f) => fav.has(f.id));
+    const rest = fixtures.filter((f) => !fav.has(f.id));
     const map = new Map<number, { title: string; logo: string | null; country: string | null; order: number; data: FixtureWithRelations[] }>();
-    for (const f of fixtures) {
+    for (const f of rest) {
       if (!map.has(f.league_id)) {
         map.set(f.league_id, { title: f.league.name, logo: f.league.logo, country: f.league.country, order: f.league.sort_order, data: [] });
       }
       map.get(f.league_id)!.data.push(f);
     }
-    return [...map.values()].sort((a, b) => a.order - b.order);
-  }, [fixtures]);
+    const leagues = [...map.values()].sort((a, b) => a.order - b.order);
+    if (!favored.length) return leagues;
+    return [{ title: 'Favoriler', logo: null, country: null, order: -1, data: favored }, ...leagues];
+  }, [fixtures, favIds]);
 
   return (
     <Screen>
@@ -76,10 +83,10 @@ export default function MatchesScreen() {
         <SectionList
           sections={sections}
           keyExtractor={(item) => String(item.id)}
-          renderItem={({ item }) => <FixtureCard fixture={item} />}
+          renderItem={({ item, section }) => <FixtureCard fixture={item} showLeague={section.order === -1} />}
           renderSectionHeader={({ section }) => (
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>{section.title}</Text>
+              <Text style={[styles.sectionTitle, section.order === -1 && { color: colors.gold }]}>{section.title}</Text>
               {section.country ? <Text style={styles.sectionCountry}>{section.country}</Text> : null}
             </View>
           )}

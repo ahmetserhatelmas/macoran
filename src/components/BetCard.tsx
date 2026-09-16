@@ -1,5 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { StyleSheet, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Badge } from '@/components/ui';
 import { dateTime, money, odd as fmtOdd } from '@/lib/format';
@@ -15,6 +16,7 @@ export const STATUS_META: Record<BetStatus, { label: string; color: string; bg: 
 };
 
 export function BetCard({ bet }: { bet: Bet }) {
+  const router = useRouter();
   const meta = STATUS_META[bet.status];
   const sels = bet.bet_selections ?? [];
   return (
@@ -30,8 +32,17 @@ export function BetCard({ bet }: { bet: Bet }) {
       <View style={styles.sels}>
         {sels.map((s) => {
           const sm = STATUS_META[s.status];
+          const openMatch = () => {
+            if (!Number.isFinite(s.fixture_id)) return;
+            router.push(`/match/${s.fixture_id}`);
+          };
           return (
-            <View key={s.id} style={styles.sel}>
+            <Pressable
+              key={s.id}
+              onPress={openMatch}
+              disabled={!Number.isFinite(s.fixture_id)}
+              style={({ pressed }) => [styles.sel, pressed && { opacity: 0.7 }]}
+            >
               <Ionicons name={sm.icon} size={18} color={s.status === 'pending' ? colors.textDim : sm.color} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.match} numberOfLines={1}>
@@ -44,7 +55,8 @@ export function BetCard({ bet }: { bet: Bet }) {
                 </Text>
               </View>
               <Text style={styles.odd}>{fmtOdd(s.odd)}</Text>
-            </View>
+              <Ionicons name="chevron-forward" size={16} color={colors.textDim} />
+            </Pressable>
           );
         })}
       </View>

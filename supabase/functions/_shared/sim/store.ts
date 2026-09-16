@@ -1,6 +1,7 @@
 // Simülasyon için DB yardımcıları (tick ve admin tarafından ortak kullanılır)
 
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
+import { earlySettleSelection, type Facts, type MatchPhase } from "./markets.ts";
 import { effectiveStrength, expectation, type Expectation, type OddRow, type RatingRow } from "./model.ts";
 import type { PlayerRow } from "./script.ts";
 
@@ -51,6 +52,7 @@ export async function loadPlayers(db: SupabaseClient, teamIds: number[]): Promis
   for (const p of data ?? []) {
     const row: PlayerRow = {
       id: Number(p.id), team_id: p.team_id, name: p.name, number: p.number, position: p.position,
+      photo: p.photo ?? null,
       talent: Number(p.talent), finishing: Number(p.finishing), creativity: Number(p.creativity), aggression: Number(p.aggression),
       injured_until: p.injured_until, suspended_matches: p.suspended_matches,
     };
@@ -127,4 +129,56 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) =>
 export async function deleteOdds(db: SupabaseClient, fixtureId: number) {
   const { error } = await db.from("odds").delete().eq("fixture_id", fixtureId);
   if (error) throw error;
+}
+
+/** Gol/penaltı anında bahsi skor görünmeden kilitle (oran askı + live_odds_at null). */
+export async function lockLiveBetting(
+  db: SupabaseClient,
+  fixtureId: number,
+  until: Date,
+  now: Date,
+) {
+  const iso = now.toISOString();
+  await Promise.all([
+    db.from("fixtures").update({ live_odds_at: null, updated_at: iso }).eq("id", fixtureId),
+    db.from("sim_matches").update({ suspended_until: until.toISOString() }).eq("fixture_id", fixtureId),
+    db.from("odds").update({ suspended: true, updated_at: iso }).eq("fixture_id", fixtureId).eq("suspended", false),
+  ]);
+}
+
+/** Kesinleşen canlı bahisleri maç bitmeden sonuçlandırır (kupon kaybı/kazancı settle_bet ile). */
+export async function settleLiveDecided(
+  db: SupabaseClient,
+  fixtureId: number,
+  facts: Facts,
+  phase: MatchPhase,
+  home: number,
+  away: number,
+): Promise<number> {
+  const { data: sels, error } = await db.from("bet_selections")
+    .select("id, bet_id, market, selection, line")
+    .eq("fixture_id", fixtureId)
+    .eq("status", "pending");
+  if (error) throw error;
+  if (!sels?.length) return 0;
+
+  const decided: { id: string; bet_id: string; status: "won" | "lost" | "void" }[] = [];
+  for (const s of sels) {
+    const status = earlySettleSelection(s.market, s.selection, Number(s.line), facts, phase);
+    if (status) decided.push({ id: s.id as string, bet_id: s.bet_id as string, status });
+  }
+  if (!decided.length) return 0;
+
+  await Promise.all(decided.map((d) =>
+    db.from("bet_selections").update({
+      status: d.status, result_home: home, result_away: away,
+    }).eq("id", d.id).eq("status", "pending"),
+  ));
+
+  const bets = [...new Set(decided.map((d) => d.bet_id))];
+  for (const id of bets) {
+    const { error: se } = await db.rpc("settle_bet", { p_bet_id: id });
+    if (se) throw se;
+  }
+  return decided.length;
 }

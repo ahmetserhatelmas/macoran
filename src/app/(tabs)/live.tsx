@@ -9,6 +9,7 @@ import { EmptyState, Header, Loading, Screen } from '@/components/ui';
 import { useLeagues, useLiveFixtures } from '@/lib/queries';
 import { colors, spacing } from '@/lib/theme';
 import { useBetslip } from '@/store/betslip';
+import { useFavorites } from '@/store/favorites';
 
 export default function LiveScreen() {
   const [leagueId, setLeagueId] = useState<number | null>(null);
@@ -20,13 +21,23 @@ export default function LiveScreen() {
     if (fixtures) syncOdds(fixtures.flatMap((f) => f.odds));
   }, [fixtures, syncOdds]);
 
-  // Sadece canlı maçı olan ligleri göster
+  // Sadece canlı maçı olan ligleri göster (test ligi is_active=false olduğu için fikstürden eklenir)
   const liveLeagues = useMemo(() => {
     const ids = new Set((fixtures ?? []).map((f) => f.league_id));
-    return leagues.filter((l) => ids.has(l.id));
+    const out = leagues.filter((l) => ids.has(l.id));
+    for (const f of fixtures ?? []) {
+      if (out.some((l) => l.id === f.league_id)) continue;
+      if (f.league) out.push(f.league);
+    }
+    return out;
   }, [leagues, fixtures]);
 
-  const list = useMemo(() => (fixtures ?? []).filter((f) => !leagueId || f.league_id === leagueId), [fixtures, leagueId]);
+  const favIds = useFavorites((s) => s.ids);
+  const list = useMemo(() => {
+    const rows = (fixtures ?? []).filter((f) => !leagueId || f.league_id === leagueId);
+    const fav = new Set(favIds);
+    return [...rows].sort((a, b) => Number(fav.has(b.id)) - Number(fav.has(a.id)) || a.date.localeCompare(b.date));
+  }, [fixtures, leagueId, favIds]);
 
   return (
     <Screen>

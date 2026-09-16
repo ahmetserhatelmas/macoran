@@ -15,6 +15,7 @@ export interface PlayerRow {
   name: string;
   number: number | null;
   position: Position;
+  photo: string | null;
   talent: number;
   finishing: number;
   creativity: number;
@@ -28,6 +29,7 @@ export interface PlayerRef {
   name: string;
   number: number | null;
   position: Position;
+  photo: string | null;
 }
 
 export interface Lineup {
@@ -45,6 +47,13 @@ export interface SimTime {
   extra: number | null;  // uzatma dakikası
 }
 export const tkey = (t: SimTime) => (t.half === 1 ? 0 : 100) + t.minute + (t.extra ?? 0);
+
+/** Ekran dakikası (1–90, isteğe bağlı uzatma) → script anahtarı */
+export function elapsedToKey(minute: number, extra = 0): number {
+  const m = Math.max(1, Math.round(minute));
+  const x = Math.max(0, Math.round(extra));
+  return m <= 45 ? m + x : 100 + m + x;
+}
 export function timeFromAbs(half: 1 | 2, abs: number): SimTime {
   // abs: 1. yarıda 1..45+st, 2. yarıda 46..90+st
   const cap = half === 1 ? 45 : 90;
@@ -61,6 +70,14 @@ export interface SimEvent {
   player: PlayerRef | null;
   assist: PlayerRef | null;
   comments: string | null;
+  /** Admin pad ile yazıldı; motorun gizli kalan golleri listede görünmez. */
+  admin?: boolean;
+}
+
+/** Gol, penaltı (verildi/çekildi), kırmızı, VAR: oranlar hemen kapanmalı. */
+export function isOddsTriggerEvent(e: Pick<SimEvent, "type" | "detail">): boolean {
+  if (e.type === "Goal" || e.type === "Var") return true;
+  return e.type === "Card" && (e.detail === "Red Card" || e.detail === "Second Yellow card");
 }
 
 export interface StatTimeline {
@@ -75,12 +92,22 @@ export interface StatTimeline {
   passAcc: number;      // %
 }
 
+/** at yoksa rastgele; "stoppage" = o yarının uzatması; sayı = 1–90 normal dakika */
+export type ScenarioGoal = {
+  side: Side;
+  half: 1 | 2;
+  at?: number | "stoppage";
+  extra?: number | null;
+};
+
 export interface Scenario {
   ht_home: number;
   ht_away: number;
   ft_home: number;
   ft_away: number;
   note?: string;
+  locked?: boolean;
+  goals?: ScenarioGoal[];
 }
 
 export interface Script {
@@ -101,7 +128,9 @@ export interface TeamCtx {
   players: PlayerRow[];
 }
 
-const ref = (p: PlayerRow | PlayerRef): PlayerRef => ({ id: p.id, name: p.name, number: p.number, position: p.position });
+const ref = (p: PlayerRow | PlayerRef): PlayerRef => ({
+  id: p.id, name: p.name, number: p.number, position: p.position, photo: p.photo ?? null,
+});
 
 const FORMATIONS: { name: string; def: number; mid: number; fwd: number; w: number }[] = [
   { name: "4-3-3", def: 4, mid: 3, fwd: 3, w: 0.35 },
@@ -275,6 +304,23 @@ export function generateScript(inp: GenerateInput): Script {
     return hi;
   };
   const push = (e: SimEvent) => { events.push(e); };
+  const pushPenalty = (side: Side, half: 1 | 2, kickAbs: number, taker: PlayerRef, scored: boolean, missComment?: string) => {
+    const awardAbs = Math.max(half === 1 ? 1 : 46, kickAbs - 1);
+    const awardTime = timeFromAbs(half, awardAbs);
+    const kickTime = timeFromAbs(half, kickAbs);
+    const viaVar = rng.chance(0.45);
+    push({
+      time: awardTime, side, type: "Var",
+      detail: viaVar ? "Penalty confirmed" : "Penalty awarded",
+      player: taker, assist: null,
+      comments: viaVar ? "VAR incelemesi sonucu penaltı" : "Penaltı!",
+    });
+    if (scored) {
+      push({ time: kickTime, side, type: "Goal", detail: "Penalty", player: taker, assist: null, comments: "Penaltıdan gol" });
+    } else {
+      push({ time: kickTime, side, type: "Goal", detail: "Missed Penalty", player: taker, assist: null, comments: missComment ?? "Kaleci kurtardı" });
+    }
+  };
 
   // ---------------- 1) Kırmızı kartlar ----------------
   const reds: { side: Side; k: number }[] = [];
@@ -381,27 +427,47 @@ export function generateScript(inp: GenerateInput): Script {
   }
 
   // ---------------- 5) Goller ----------------
+  const plannedGoals = sc?.goals ?? [];
+  const plannedAt = (side: Side, half: 1 | 2, idx: number) =>
+    plannedGoals.filter((g) => g.side === side && g.half === half)[idx]?.at;
+  const placeAbs = (half: 1 | 2, want: number) => {
+    const lo = half === 1 ? 1 : 46;
+    const hi = half === 1 ? 45 + 8 : 90 + 8;
+    let abs = Math.max(lo, Math.min(hi, want));
+    for (let i = 0; i < 16; i++) {
+      const k = tkey(timeFromAbs(half, abs));
+      if (!usedKeys.has(k)) { usedKeys.add(k); return abs; }
+      const step = Math.ceil((i + 1) / 2) * (i % 2 === 0 ? 1 : -1);
+      abs = Math.max(lo, Math.min(hi, abs + step));
+    }
+    usedKeys.add(tkey(timeFromAbs(half, abs)));
+    return abs;
+  };
+  const absForGoal = (half: 1 | 2, at: ScenarioGoal["at"]) => {
+    if (at === "stoppage") return half === 1 ? pickAbs(1, 46, 45 + 8) : pickAbs(2, 91, 90 + 8);
+    if (typeof at === "number" && at > 0) {
+      const want = half === 1 ? Math.max(1, Math.min(45, at)) : Math.max(46, Math.min(90, at <= 45 ? 46 : at));
+      return placeAbs(half, want);
+    }
+    return half === 1 ? pickAbs(1, 1, END1, 0.6) : pickAbs(2, 46, END2, 0.7);
+  };
   let penalty = false;
   const goalTimes: Record<Side, number[]> = { home: [], away: [] };
   for (const side of ["home", "away"] as Side[]) {
     for (const half of [1, 2] as (1 | 2)[]) {
       const n = goals[side][half - 1];
       for (let g = 0; g < n; g++) {
-        const abs = half === 1 ? pickAbs(1, 1, END1, 0.6) : pickAbs(2, 46, END2, 0.7);
+        const abs = absForGoal(half, plannedAt(side, half, g));
         const time = timeFromAbs(half, abs);
         const k = tkey(time);
         const ts = teams[side];
         const opp = teams[other(side)];
         const roll = rng.next();
         if (roll < PEN_GOAL_FRAC) {
-          // Penaltı golü
           penalty = true;
           const cand = onPitch(ts, k);
           const taker = cand.slice().sort((a, b) => attr(ts, b, "finishing") - attr(ts, a, "finishing"))[0] ?? cand[0];
-          if (rng.chance(0.5)) {
-            push({ time, side, type: "Var", detail: "Penalty confirmed", player: null, assist: null, comments: "VAR incelemesi sonucu penaltı" });
-          }
-          push({ time, side, type: "Goal", detail: "Penalty", player: taker, assist: null, comments: "Penaltıdan gol" });
+          pushPenalty(side, half, abs, taker, true);
         } else if (roll < PEN_GOAL_FRAC + 0.03) {
           // Kendi kalesine
           const cand = onPitch(opp, k).filter((p) => p.position === "DEF" || p.position === "MID");
@@ -434,7 +500,7 @@ export function generateScript(inp: GenerateInput): Script {
     const cand = onPitch(ts, tkey(time));
     const taker = cand.slice().sort((a, b) => attr(ts, b, "finishing") - attr(ts, a, "finishing"))[0];
     if (!taker) continue;
-    push({ time, side, type: "Goal", detail: "Missed Penalty", player: taker, assist: null, comments: rng.chance(0.5) ? "Kaleci kurtardı" : "Direkten döndü" });
+    pushPenalty(side, half, abs, taker, false, rng.chance(0.5) ? "Kaleci kurtardı" : "Direkten döndü");
   }
 
   // ---------------- 7) Sarı kartlar ----------------
@@ -548,7 +614,9 @@ export function generateScript(inp: GenerateInput): Script {
     facts,
     injuries,
     suspensions,
-    scenario: sc,
+    scenario: sc
+      ? { ...sc, ht_home: facts.h1, ht_away: facts.a1, ft_home: facts.h1 + facts.h2, ft_away: facts.a1 + facts.a2 }
+      : null,
   };
 }
 
@@ -692,13 +760,14 @@ function deriveChanceEvents(script: Script): SimEvent[] {
   return out.sort((a, b) => tkey(a.time) - tkey(b.time));
 }
 
-/** k: geçerli zaman anahtarı (dahil). HT için k = 99 (1. yarının tamamı) */
-export function snapshot(script: Script, k: number): Snapshot {
+/** k: geçerli zaman anahtarı (dahil). HT için k = 99 (1. yarının tamamı). maxEvents: henüz açıklanmayan tetik olaylarını tutmak için. */
+export function snapshot(script: Script, k: number, maxEvents = Infinity): Snapshot {
   const src = withChanceEvents(script);
   const s: Snapshot = { h1: 0, a1: 0, h2: 0, a2: 0, corners: 0, corners1h: 0, penalty: false, redHome: 0, redAway: 0, events: [] };
   for (const e of src.events) {
     const ek = tkey(e.time);
     if (ek > k) break;
+    if (s.events.length >= maxEvents) break;
     s.events.push(e);
     if (e.type === "Goal") {
       if (e.detail === "Missed Penalty") { s.penalty = true; continue; }
@@ -725,3 +794,208 @@ export const countUpTo = (keys: number[], k: number) => {
   for (const x of keys) { if (x <= k) n++; else break; }
   return n;
 };
+
+const GOAL_COMMENTS = ["Şık bir vuruş", "Kafa golü", "Yakın mesafeden", "Uzaktan sert şut", "Kontratak sonunda", "Karambolde", "Plase vuruş"];
+
+function isScoringGoal(e: SimEvent) {
+  return e.type === "Goal" && e.detail !== "Missed Penalty";
+}
+
+function scenarioGoalsFromEvents(events: SimEvent[]): ScenarioGoal[] {
+  return events.filter(isScoringGoal).map((e) => ({
+    side: e.side,
+    half: e.time.half,
+    at: e.time.extra ? "stoppage" : e.time.minute,
+    extra: e.time.extra,
+  }));
+}
+
+/** Gol olaylarından maç sonu gerçeklerini yeniden kurar (admin müdahalesi sonrası). */
+export function rebuildFacts(script: Script): Facts {
+  let h1 = 0, a1 = 0, h2 = 0, a2 = 0;
+  let penalty = script.facts.penalty;
+  for (const e of script.events) {
+    if (e.type !== "Goal") continue;
+    if (e.detail === "Missed Penalty") { penalty = true; continue; }
+    if (e.detail === "Penalty") penalty = true;
+    if (e.time.half === 1) { if (e.side === "home") h1++; else a1++; }
+    else { if (e.side === "home") h2++; else a2++; }
+  }
+  return { ...script.facts, h1, a1, h2, a2, penalty };
+}
+
+/** Canlı maça gol ekler veya son açıklanan golü siler. */
+export function applyLiveScore(script: Script, opts: { side: Side; add: boolean; time: SimTime; nonce: number }): Script {
+  const k = tkey(opts.time);
+  const rng = new Rng(hashSeed("live-score", opts.nonce, k, opts.side));
+  const events = script.events.slice();
+  if (!opts.add) {
+    let idx = -1;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      if (isScoringGoal(e) && e.side === opts.side && tkey(e.time) <= k) { idx = i; break; }
+    }
+    if (idx < 0) throw new Error("Bu takımın henüz silinecek golü yok");
+    events.splice(idx, 1);
+    const next = { ...script, events };
+    next.facts = rebuildFacts(next);
+    return next;
+  }
+
+  const pitch = pitchFromScript({ ...script, events }, opts.side, k);
+  const attackers = pitch.filter((p) => p.position !== "GK");
+  const scorer = pickAttacker(rng, attackers.length ? attackers : pitch);
+  const others = pitch.filter((p) => p.id !== scorer?.id && p.position !== "GK");
+  const assist = others.length && rng.chance(0.72)
+    ? rng.weighted(others, (p) => POS_ASSIST[p.position]) ?? null
+    : null;
+  events.push({
+    time: opts.time,
+    side: opts.side,
+    type: "Goal",
+    detail: "Normal Goal",
+    player: scorer,
+    assist,
+    comments: rng.pick(GOAL_COMMENTS),
+  });
+  events.sort((a, b) => tkey(a.time) - tkey(b.time) || (a.type === "Goal" ? 1 : 0) - (b.type === "Goal" ? 1 : 0));
+  const shots = [...script.stats[opts.side].shots, k].sort((a, b) => a - b);
+  const sot = [...script.stats[opts.side].sot, k].sort((a, b) => a - b);
+  const next: Script = {
+    ...script,
+    events,
+    stats: { ...script.stats, [opts.side]: { ...script.stats[opts.side], shots, sot } },
+  };
+  next.facts = rebuildFacts(next);
+  return next;
+}
+
+function remainingSlots(script: Script, nowKey: number): number[] {
+  const st1 = script.stoppage.h1, st2 = script.stoppage.h2;
+  const slots: number[] = [];
+  if (nowKey < 45 + st1) {
+    for (let k = nowKey + 1; k <= 45 + st1; k++) slots.push(k);
+  }
+  for (let abs = 46; abs <= 90 + st2; abs++) {
+    const k = 100 + abs;
+    if (k > nowKey) slots.push(k);
+  }
+  return slots;
+}
+
+function pushForcedGoal(script: Script, events: SimEvent[], side: Side, k: number, rng: Rng) {
+  const time = timeFromKey(k);
+  const pitch = pitchFromScript({ ...script, events }, side, k);
+  const attackers = pitch.filter((p) => p.position !== "GK");
+  const scorer = pickAttacker(rng, attackers.length ? attackers : pitch);
+  const others = pitch.filter((p) => p.id !== scorer?.id && p.position !== "GK");
+  const assist = others.length && rng.chance(0.72)
+    ? rng.weighted(others, (p) => POS_ASSIST[p.position]) ?? null
+    : null;
+  events.push({
+    time, side, type: "Goal", detail: "Normal Goal", player: scorer, assist,
+    comments: rng.pick(GOAL_COMMENTS),
+    admin: true,
+  });
+}
+
+function rebuildAfterGoals(script: Script, events: SimEvent[]): Script {
+  events.sort((a, b) => tkey(a.time) - tkey(b.time));
+  const goalKeys = (side: Side) => events.filter((e) => isScoringGoal(e) && e.side === side).map((e) => tkey(e.time));
+  const mergeStat = (old: number[], extra: number[]) => [...new Set([...old, ...extra])].sort((a, b) => a - b);
+  const next: Script = {
+    ...script,
+    events,
+    stats: {
+      home: { ...script.stats.home, shots: mergeStat(script.stats.home.shots, goalKeys("home")), sot: mergeStat(script.stats.home.sot, goalKeys("home")) },
+      away: { ...script.stats.away, shots: mergeStat(script.stats.away.shots, goalKeys("away")), sot: mergeStat(script.stats.away.sot, goalKeys("away")) },
+    },
+  };
+  next.facts = rebuildFacts(next);
+  return next;
+}
+
+/**
+ * Canlıda gol ekler; motorun kalan golleri durur, akış devam eder.
+ */
+export function injectLiveGoals(script: Script, opts: {
+  nowKey: number;
+  extraAts: { side: Side; key: number }[];
+  nonce: number;
+}): Script {
+  const clampKey = (k: number) => Math.max(opts.nowKey, Math.max(1, k));
+  const events = script.events.slice();
+  const rng = new Rng(hashSeed("inject-live", opts.nonce, opts.nowKey, opts.extraAts.length));
+  for (const x of opts.extraAts) pushForcedGoal(script, events, x.side, clampKey(x.key), rng);
+  const next = rebuildAfterGoals(script, events);
+  next.scenario = {
+    ...(script.scenario ?? {
+      ht_home: next.facts.h1, ht_away: next.facts.a1,
+      ft_home: next.facts.h1 + next.facts.h2, ft_away: next.facts.a1 + next.facts.a2,
+    }),
+    goals: scenarioGoalsFromEvents(events.filter((e) => e.admin)),
+  };
+  return next;
+}
+
+/**
+ * Adminin yazdığı henüz olmamış golü siler; motorun kalan gollerine dokunmaz.
+ */
+export function dropAdminGoal(script: Script, opts: { nowKey: number; side: Side; key: number }): Script {
+  let dropped = false;
+  const events = script.events.filter((e) => {
+    if (dropped || !e.admin || !isScoringGoal(e) || e.side !== opts.side) return true;
+    if (tkey(e.time) !== opts.key || tkey(e.time) <= opts.nowKey) return true;
+    dropped = true;
+    return false;
+  });
+  if (!dropped) throw new Error("O gol henüz olmamış admin planında yok");
+  const next = rebuildAfterGoals(script, events);
+  next.scenario = {
+    ...(script.scenario ?? {
+      ht_home: next.facts.h1, ht_away: next.facts.a1,
+      ft_home: next.facts.h1 + next.facts.h2, ft_away: next.facts.a1 + next.facts.a2,
+    }),
+    goals: scenarioGoalsFromEvents(events.filter((e) => e.admin)),
+  };
+  return next;
+}
+
+/**
+ * Canlıda planlanan maç sonunu yeniden yazar.
+ * Olmuş goller silinmez; henüz açıklanmamış goller iptal/eklenir.
+ */
+export function rewriteRemainingScore(script: Script, opts: {
+  nowKey: number;
+  goalKey?: number;
+  extraAts?: { side: Side; key: number }[];
+  wantHome: number;
+  wantAway: number;
+  nonce: number;
+}): Script {
+  const snap = snapshot(script, opts.nowKey);
+  const curH = snap.h1 + snap.h2, curA = snap.a1 + snap.a2;
+  if (opts.wantHome < curH || opts.wantAway < curA) {
+    throw new Error("Olmuş gol geri alınamaz");
+  }
+  const clampKey = (k: number) => Math.max(opts.nowKey, Math.max(1, k));
+  const at = clampKey(opts.goalKey ?? opts.nowKey);
+  const events = script.events.filter((e) => !isScoringGoal(e) || tkey(e.time) <= opts.nowKey);
+  const rng = new Rng(hashSeed("rewrite-remaining", opts.nonce, at, opts.wantHome, opts.wantAway));
+  const nH = opts.wantHome - curH, nA = opts.wantAway - curA;
+  const homeKeys = (opts.extraAts ?? []).filter((x) => x.side === "home").map((x) => clampKey(x.key));
+  const awayKeys = (opts.extraAts ?? []).filter((x) => x.side === "away").map((x) => clampKey(x.key));
+  while (homeKeys.length < nH) homeKeys.push(at);
+  while (awayKeys.length < nA) awayKeys.push(at);
+  for (const k of homeKeys.slice(0, nH)) pushForcedGoal(script, events, "home", k, rng);
+  for (const k of awayKeys.slice(0, nA)) pushForcedGoal(script, events, "away", k, rng);
+  const next = rebuildAfterGoals(script, events);
+  next.scenario = {
+    ht_home: next.facts.h1, ht_away: next.facts.a1,
+    ft_home: next.facts.h1 + next.facts.h2, ft_away: next.facts.a1 + next.facts.a2,
+    note: "admin skor",
+    locked: true,
+    goals: scenarioGoalsFromEvents(events.filter((e) => e.admin)),
+  };
+  return next;
+}

@@ -2,27 +2,31 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { AdminScorePad } from '@/components/AdminScorePad';
 import { BetslipBar } from '@/components/BetslipBar';
+import { MatchLineup } from '@/components/MatchLineup';
 import { MatchStats } from '@/components/MatchStats';
 import { MatchTimeline } from '@/components/MatchTimeline';
 import { OddButton } from '@/components/OddButton';
 import { TeamLogo } from '@/components/TeamLogo';
 import { Badge, EmptyState, Header, IconButton, Loading, Muted, Screen } from '@/components/ui';
 import { ago, dateTime, dayjs } from '@/lib/format';
-import { canBet, groupOdds, isFinished, isLive, MARKET_CATEGORIES, selectionLabel, statusLabel } from '@/lib/markets';
+import { canBet, groupOdds, hideDecidedOdds, isFinished, isLive, liveBettingLocked, MARKET_CATEGORIES, selectionLabel, statusLabel } from '@/lib/markets';
 import { useFixture, useFixtureDetail } from '@/lib/queries';
 import { colors, radius, spacing } from '@/lib/theme';
+import { useAuth } from '@/store/auth';
 import { useBetslip } from '@/store/betslip';
 import type { Odd } from '@/types/db';
 
-type Tab = 'odds' | 'stats' | 'timeline';
-const TAB_LABELS: Record<Tab, string> = { odds: 'Oranlar', stats: 'İstatistikler', timeline: 'Anlatım' };
+type Tab = 'odds' | 'lineup' | 'stats' | 'timeline';
+const TAB_LABELS: Record<Tab, string> = { odds: 'Oranlar', lineup: 'Kadrolar', stats: 'İstat.', timeline: 'Anlatım' };
 
 export default function MatchScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const fixtureId = Number(id);
   const { data: f, isLoading } = useFixture(fixtureId);
+  const isAdmin = useAuth((s) => s.profile?.is_admin);
   const toggle = useBetslip((s) => s.toggle);
   const selections = useBetslip((s) => s.selections);
   const syncOdds = useBetslip((s) => s.syncOdds);
@@ -31,7 +35,7 @@ export default function MatchScreen() {
     if (f) syncOdds(f.odds);
   }, [f, syncOdds]);
 
-  const groups = useMemo(() => (f ? groupOdds(f.odds) : []), [f]);
+  const groups = useMemo(() => (f ? groupOdds(hideDecidedOdds(f.odds, f)) : []), [f]);
   const [category, setCategory] = useState('all');
   const visibleGroups = useMemo(() => {
     const cat = MARKET_CATEGORIES.find((c) => c.key === category);
@@ -59,6 +63,7 @@ export default function MatchScreen() {
   const live = isLive(f.status_short);
   const finished = isFinished(f.status_short);
   const bettable = canBet(f.status_short);
+  const locked = liveBettingLocked(f.status_short, f.live_odds_at);
   const anyLiveOdd = f.odds.some((o) => o.is_live);
   const lastOddChange = f.odds.reduce<string | null>((acc, o) => (!acc || o.updated_at > acc ? o.updated_at : acc), null);
   // Canlıda oranlar değişmese de API ile doğrulanır; o zamanı göster
@@ -123,9 +128,10 @@ export default function MatchScreen() {
             </View>
           </View>
           {f.venue ? <Muted style={{ textAlign: 'center', fontSize: 12 }}>{f.venue}</Muted> : null}
+          {isAdmin && f.is_sim && (live || f.status_short === 'NS') ? <AdminScorePad fixture={f} /> : null}
         </View>
 
-        {/* Sekmeler: Oranlar / İstatistikler / Anlatım */}
+        {/* Sekmeler: Oranlar / Kadrolar / İstatistikler / Anlatım */}
         {live || finished ? (
           <View style={styles.tabs}>
             {(Object.keys(TAB_LABELS) as Tab[]).map((t) => (
@@ -136,7 +142,15 @@ export default function MatchScreen() {
           </View>
         ) : null}
 
-        {tab === 'stats' ? (
+        {tab === 'lineup' ? (
+          <View style={{ paddingHorizontal: spacing.lg }}>
+            {detail.isLoading ? (
+              <Loading />
+            ) : (
+              <MatchLineup lineups={detail.data?.lineups} events={detail.data?.events ?? []} homeId={f.home_team_id} />
+            )}
+          </View>
+        ) : tab === 'stats' ? (
           <View style={{ paddingHorizontal: spacing.lg }}>
             {detail.isLoading ? (
               <Loading />
@@ -176,8 +190,13 @@ export default function MatchScreen() {
         ) : (
           <View style={{ paddingHorizontal: spacing.lg, gap: spacing.md }}>
             <View style={styles.oddsInfo}>
-              <Badge text={anyLiveOdd ? 'Canlı Oranlar' : 'Maç Öncesi Oranlar'} color={anyLiveOdd ? 'rgba(239,68,68,0.15)' : colors.surface3} textColor={anyLiveOdd ? colors.live : colors.textMuted} dot={anyLiveOdd} />
-              {lastUpdate ? <Muted style={{ fontSize: 11 }}>Güncelleme {ago(lastUpdate)}</Muted> : null}
+              <Badge
+                text={locked ? 'Oranlar askıda' : anyLiveOdd ? 'Canlı Oranlar' : 'Maç Öncesi Oranlar'}
+                color={locked || anyLiveOdd ? 'rgba(239,68,68,0.15)' : colors.surface3}
+                textColor={locked || anyLiveOdd ? colors.live : colors.textMuted}
+                dot={anyLiveOdd && !locked}
+              />
+              {lastUpdate && !locked ? <Muted style={{ fontSize: 11 }}>Güncelleme {ago(lastUpdate)}</Muted> : null}
             </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.catRow}>
               {MARKET_CATEGORIES.map((c) => (
@@ -198,7 +217,7 @@ export default function MatchScreen() {
                       <OddButton
                         label={selectionLabel(o.market, o.selection, o.line, f.home.name, f.away.name)}
                         odd={o.odd}
-                        suspended={o.suspended}
+                        suspended={locked || o.suspended}
                         selected={isSel(o)}
                         onPress={() => onOdd(o)}
                       />
@@ -246,7 +265,7 @@ const styles = StyleSheet.create({
   },
   tab: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: radius.sm },
   tabActive: { backgroundColor: colors.surface3 },
-  tabText: { color: colors.textMuted, fontSize: 13, fontWeight: '600' },
+  tabText: { color: colors.textMuted, fontSize: 12, fontWeight: '600' },
   tabTextActive: { color: colors.text, fontWeight: '800' },
   market: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, gap: spacing.sm, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border },
   marketTitle: { color: colors.text, fontWeight: '800', fontSize: 14 },

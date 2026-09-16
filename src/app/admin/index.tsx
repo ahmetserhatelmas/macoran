@@ -64,6 +64,17 @@ export default function AdminScreen() {
               <Ionicons name="chevron-forward" size={18} color={colors.textDim} />
             </Pressable>
 
+            <Pressable onPress={() => router.push('/admin/live')} style={({ pressed }) => [styles.simCard, pressed && { opacity: 0.85 }]}>
+              <View style={[styles.simIcon, { backgroundColor: 'rgba(239,68,68,0.12)' }]}>
+                <Ionicons name="football" size={20} color={colors.live} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.simTitle}>Canlı skor</Text>
+                <Muted style={{ fontSize: 12 }}>Oynanan maçlara gol ekle veya sil; oranlar anında güncellenir.</Muted>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textDim} />
+            </Pressable>
+
             {stats?.last_sync?.length ? (
               <View style={styles.sync}>
                 <Text style={styles.syncTitle}>Son İşlemler</Text>

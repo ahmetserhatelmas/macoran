@@ -10,8 +10,14 @@ import { useMyBets } from '@/lib/queries';
 import { colors, radius, spacing } from '@/lib/theme';
 import { useBetslip } from '@/store/betslip';
 
-type Filter = 'all' | 'pending' | 'won' | 'lost';
-const FILTER_LABELS: Record<Filter, string> = { all: 'Hepsi', pending: 'Bekleyen', won: 'Kazanan', lost: 'Kaybeden' };
+type Filter = 'all' | 'pending' | 'won' | 'lost' | 'void';
+const FILTER_LABELS: Record<Filter, string> = {
+  all: 'Hepsi',
+  pending: 'Bekleyen',
+  won: 'Kazanan',
+  lost: 'Kaybeden',
+  void: 'İade',
+};
 
 export default function BetsScreen() {
   const router = useRouter();
@@ -29,11 +35,13 @@ export default function BetsScreen() {
     const all = bets ?? [];
     const won = all.filter((b) => b.status === 'won').length;
     const lost = all.filter((b) => b.status === 'lost').length;
+    const voided = all.filter((b) => b.status === 'void').length;
+    const pending = all.filter((b) => b.status === 'pending').length;
     // Net: sonuçlanan kuponlar üzerinden (bekleyenlerin tutarı henüz kayıp değil)
     const settled = all.filter((b) => b.status !== 'pending');
     const staked = settled.reduce((a, b) => a + b.stake, 0);
     const returned = settled.reduce((a, b) => a + (b.payout ?? 0), 0);
-    return { total: all.length, won, lost, net: returned - staked };
+    return { total: all.length, won, lost, voided, pending, net: returned - staked };
   }, [bets]);
 
   return (
@@ -54,15 +62,31 @@ export default function BetsScreen() {
         <Stat label="Toplam" value={String(stats.total)} />
         <Stat label="Kazanan" value={String(stats.won)} color={colors.success} />
         <Stat label="Kaybeden" value={String(stats.lost)} color={colors.danger} />
-        <Stat label="Net" value={money(stats.net, { sign: true })} color={stats.net >= 0 ? colors.success : colors.danger} />
+        <Stat label="İade" value={String(stats.voided)} color={colors.info} />
+      </View>
+      <View style={styles.netRow}>
+        <Text style={styles.statLabel}>Net</Text>
+        <Text style={[styles.netValue, { color: stats.net >= 0 ? colors.success : colors.danger }]}>
+          {money(stats.net, { sign: true })}
+        </Text>
       </View>
 
       <View style={styles.filters}>
-        {(Object.keys(FILTER_LABELS) as Filter[]).map((f) => (
-          <Pressable key={f} onPress={() => setFilter(f)} style={[styles.filter, filter === f && styles.filterActive]}>
-            <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>{FILTER_LABELS[f]}</Text>
-          </Pressable>
-        ))}
+        {(Object.keys(FILTER_LABELS) as Filter[]).map((f) => {
+          const n =
+            f === 'all' ? stats.total
+            : f === 'pending' ? stats.pending
+            : f === 'won' ? stats.won
+            : f === 'lost' ? stats.lost
+            : stats.voided;
+          return (
+            <Pressable key={f} onPress={() => setFilter(f)} style={[styles.filter, filter === f && styles.filterActive]}>
+              <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
+                {FILTER_LABELS[f]} {n}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
 
       {isLoading ? (
@@ -111,7 +135,21 @@ const styles = StyleSheet.create({
   stat: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.md, padding: spacing.sm, paddingVertical: spacing.md, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border },
   statLabel: { color: colors.textMuted, fontSize: 11, fontWeight: '600' },
   statValue: { fontSize: 15, fontWeight: '800', marginTop: 4, fontVariant: ['tabular-nums'] },
-  filters: { flexDirection: 'row', gap: spacing.sm, paddingHorizontal: spacing.lg, paddingTop: spacing.md },
+  netRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
+  netValue: { fontSize: 18, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  filters: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, paddingHorizontal: spacing.lg, paddingTop: spacing.md },
   filter: { paddingHorizontal: 12, height: 32, borderRadius: radius.full, backgroundColor: colors.surface2, justifyContent: 'center', borderWidth: 1, borderColor: colors.border },
   filterActive: { backgroundColor: colors.text, borderColor: colors.text },
   filterText: { color: colors.textMuted, fontSize: 13, fontWeight: '600' },

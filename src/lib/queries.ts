@@ -9,10 +9,19 @@ import type { Bet, FixtureWithRelations, League, Profile, Standings, Team, Trans
 
 const FIXTURE_SELECT = `*, home:teams!home_team_id(*), away:teams!away_team_id(*), league:leagues(*), odds(*)`;
 
+/** Oran testi ligi — puan durumu listesinde yok, canlıda "Test Maçları" olarak görünür. */
+export const TEST_LEAGUE_ID = 99999;
+
+function normalizeSimMatches(raw: FixtureWithRelations['sim_matches'] | FixtureWithRelations['sim_matches'][] | null | undefined) {
+  const row = Array.isArray(raw) ? raw[0] : raw;
+  return row ?? null;
+}
+
 function normalizeFixture(f: FixtureWithRelations): FixtureWithRelations {
   return {
     ...f,
     odds: (f.odds ?? []).map((o) => ({ ...o, odd: Number(o.odd), line: Number(o.line) })),
+    sim_matches: normalizeSimMatches(f.sim_matches),
   };
 }
 
@@ -22,7 +31,7 @@ export function useLeagues() {
     queryFn: async () => {
       const { data, error } = await supabase.from('leagues').select('*').eq('is_active', true).order('sort_order');
       if (error) throw error;
-      return data as League[];
+      return (data as League[]).filter((l) => l.id !== TEST_LEAGUE_ID);
     },
     staleTime: 60 * 60 * 1000,
   });
@@ -44,6 +53,7 @@ export function useFixturesByDate(date: dayjs.Dayjs, leagueId: number | null) {
         .eq('odds.market', '1X2')
         .order('date');
       if (leagueId) q = q.eq('league_id', leagueId);
+      else q = q.neq('league_id', TEST_LEAGUE_ID);
       const { data, error } = await q;
       if (error) throw error;
       return (data as unknown as FixtureWithRelations[]).map(normalizeFixture);
@@ -71,10 +81,12 @@ export function useLiveFixtures() {
 }
 
 export function useFixture(id: number) {
+  const isAdmin = useAuth((s) => s.profile?.is_admin);
+  const select = isAdmin ? `${FIXTURE_SELECT}, sim_matches(scenario, facts, script)` : FIXTURE_SELECT;
   return useQuery({
-    queryKey: ['fixture', id],
+    queryKey: ['fixture', id, isAdmin ? 'admin' : 'pub'],
     queryFn: async () => {
-      const { data, error } = await supabase.from('fixtures').select(FIXTURE_SELECT).eq('id', id).single();
+      const { data, error } = await supabase.from('fixtures').select(select).eq('id', id).single();
       if (error) throw error;
       return normalizeFixture(data as unknown as FixtureWithRelations);
     },
@@ -96,10 +108,28 @@ export interface TeamStatistics {
   team: { id: number; name: string; logo: string | null };
   statistics: { type: string; value: number | string | null }[];
 }
+export interface LineupPlayer {
+  id: number;
+  name: string;
+  number: number | null;
+  position: 'GK' | 'DEF' | 'MID' | 'FWD';
+  photo: string | null;
+}
+export interface TeamLineup {
+  team: { id: number; name: string; logo: string | null };
+  formation: string;
+  starters: LineupPlayer[];
+  bench: LineupPlayer[];
+}
+export interface FixtureLineups {
+  home: TeamLineup;
+  away: TeamLineup;
+}
 export interface FixtureDetail {
   fixture_id: number;
   events: FixtureEvent[];
   statistics: TeamStatistics[];
+  lineups?: FixtureLineups | null;
   final: boolean;
   updated_at: string | null;
 }
@@ -205,12 +235,73 @@ export async function simAdmin<T = Record<string, unknown>>(action: string, body
 export function useSimStatus() {
   return useQuery({
     queryKey: ['admin', 'sim-status'],
-    queryFn: () => simAdmin<{ settings: SimSettingsRow; leagues: SimLeagueStatus[] }>('status'),
+    queryFn: () => simAdmin<{
+      settings: SimSettingsRow;
+      leagues: SimLeagueStatus[];
+      test_matches?: { count: number; live: number };
+    }>('status'),
     refetchInterval: 30_000,
   });
 }
 
-/** Admin: bir ligin yaklaşan simülasyon maçları (senaryo yazmak için) */
+export type AdminScoreFixture = {
+  id: number;
+  date: string;
+  round: string | null;
+  status_short: string;
+  elapsed: number | null;
+  home_goals: number | null;
+  away_goals: number | null;
+  league_id: number;
+  home: Team;
+  away: Team;
+  league: { id: number; name: string } | null;
+  sim_matches: {
+    scenario: { ht_home: number; ht_away: number; ft_home: number; ft_away: number; note?: string; goals?: { side: 'home' | 'away'; half: 1 | 2; at?: number | 'stoppage' }[] } | null;
+    facts: { h1: number; a1: number; h2: number; a2: number } | null;
+  } | null;
+};
+
+const ADMIN_SCORE_SELECT = `id, date, round, status_short, elapsed, home_goals, away_goals, league_id, home:teams!home_team_id(id, name, logo), away:teams!away_team_id(id, name, logo), league:leagues(id, name), sim_matches(scenario, facts)`;
+
+/** Admin: canlı + yaklaşan simülasyon maçları (skor müdahalesi). */
+export function useAdminLiveFixtures() {
+  return useQuery({
+    queryKey: ['admin', 'live-fixtures'],
+    queryFn: async () => {
+      const liveQ = supabase
+        .from('fixtures')
+        .select(ADMIN_SCORE_SELECT)
+        .eq('is_sim', true)
+        .eq('archived', false)
+        .in('status_short', ['1H', 'HT', '2H'])
+        .order('date')
+        .limit(80);
+      const nsQ = supabase
+        .from('fixtures')
+        .select(ADMIN_SCORE_SELECT)
+        .eq('is_sim', true)
+        .eq('archived', false)
+        .eq('status_short', 'NS')
+        .gte('date', new Date(Date.now() - 60_000).toISOString())
+        .order('date')
+        .limit(80);
+      const [live, ns] = await Promise.all([liveQ, nsQ]);
+      if (live.error) throw live.error;
+      if (ns.error) throw ns.error;
+      const seen = new Set<number>();
+      const out: AdminScoreFixture[] = [];
+      for (const row of [...(live.data ?? []), ...(ns.data ?? [])] as unknown as AdminScoreFixture[]) {
+        if (seen.has(row.id)) continue;
+        seen.add(row.id);
+        out.push(row);
+      }
+      return out;
+    },
+    refetchInterval: 5_000,
+  });
+}
+
 export function useUpcomingSimFixtures(leagueId: number | null) {
   return useQuery({
     queryKey: ['admin', 'upcoming', leagueId],
@@ -423,16 +514,24 @@ export function useRealtimeSync() {
       for (const key of pending) qc.invalidateQueries({ queryKey: [key] });
       pending.clear();
     };
-    const schedule = (key: string) => {
+    const schedule = (key: string, immediate = false) => {
       pending.add(key);
+      if (immediate) {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        flush();
+        return;
+      }
       if (!timer) timer = setTimeout(flush, 1500);
     };
 
     const ch = supabase
       .channel('macoran-live')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'fixtures' }, () => {
-        schedule('fixtures');
-        schedule('fixture');
+        schedule('fixtures', true);
+        schedule('fixture', true);
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'odds' }, () => {
         schedule('fixtures');
@@ -441,6 +540,9 @@ export function useRealtimeSync() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'bets', filter: `user_id=eq.${uid}` }, () => {
         schedule('bets');
         schedule('transactions');
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bet_selections' }, () => {
+        schedule('bets');
       })
       .subscribe();
 

@@ -70,11 +70,34 @@ export interface Fixture {
   updated_at: string;
 }
 
+export interface SimScenario {
+  ht_home: number;
+  ht_away: number;
+  ft_home: number;
+  ft_away: number;
+  note?: string;
+  locked?: boolean;
+  goals?: { side: 'home' | 'away'; half: 1 | 2; at?: number | 'stoppage'; extra?: number | null }[];
+}
+
 export interface FixtureWithRelations extends Fixture {
   home: Team;
   away: Team;
   league: League;
   odds: Odd[];
+  sim_matches?: {
+    scenario: SimScenario | null;
+    facts: { h1: number; a1: number; h2: number; a2: number } | null;
+    script?: {
+      events: {
+        time: { half: 1 | 2; minute: number; extra: number | null };
+        side: 'home' | 'away';
+        type: string;
+        detail: string;
+        admin?: boolean;
+      }[];
+    } | null;
+  } | null;
 }
 
 export interface BetSelection {

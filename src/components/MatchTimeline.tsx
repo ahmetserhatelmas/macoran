@@ -18,7 +18,7 @@ interface Props {
   finished: boolean;
 }
 
-type Kind = 'goal' | 'own' | 'pen' | 'missed' | 'yellow' | 'red' | 'sub' | 'var' | 'injury' | 'woodwork' | 'chance' | 'save' | 'attack' | 'other';
+type Kind = 'goal' | 'own' | 'pen' | 'penaward' | 'missed' | 'yellow' | 'red' | 'sub' | 'var' | 'injury' | 'woodwork' | 'chance' | 'save' | 'attack' | 'other';
 
 function classify(e: FixtureEvent): Kind {
   const d = (e.detail ?? '').toLowerCase();
@@ -30,7 +30,10 @@ function classify(e: FixtureEvent): Kind {
   }
   if (e.type === 'Card') return d.includes('red') ? 'red' : 'yellow';
   if (e.type === 'subst') return 'sub';
-  if (e.type === 'Var') return 'var';
+  if (e.type === 'Var') {
+    if (d.includes('penalty awarded') || d.includes('penalty confirmed')) return 'penaward';
+    return 'var';
+  }
   if (e.type === 'Injury') return 'injury';
   if (e.type === 'Chance') {
     if (d.includes('wood')) return 'woodwork';
@@ -57,6 +60,8 @@ export function narrate(e: FixtureEvent, kind: Kind, score?: string): string {
       return `GOL! ${p} ${team} adına ağları buluyor${a ? ` (asist: ${a})` : ''}.${note}${score ? ` Skor ${score}.` : ''}`;
     case 'pen':
       return `GOL! ${p} penaltıyı gole çeviriyor, ${team} skoru değiştiriyor.${score ? ` Skor ${score}.` : ''}`;
+    case 'penaward':
+      return `PENALTI! ${p !== 'Oyuncu' ? `${p} (${team})` : team} penaltı kazandı. Atış bekleniyor.`;
     case 'own':
       return `Kendi kalesine gol! ${p} (${team}) topu kendi ağlarına gönderiyor.${score ? ` Skor ${score}.` : ''}`;
     case 'missed':
@@ -121,6 +126,7 @@ function translateVar(d: string) {
   const m: Record<string, string> = {
     'goal cancelled': 'Gol iptal edildi',
     'goal confirmed': 'Gol onaylandı',
+    'penalty awarded': 'Penaltı verildi',
     'penalty confirmed': 'Penaltı onaylandı',
     'penalty cancelled': 'Penaltı iptal edildi',
     'card upgrade': 'Kart kırmızıya çevrildi',
@@ -136,6 +142,7 @@ function translateVar(d: string) {
 const ICON: Record<Kind, { name: React.ComponentProps<typeof Ionicons>['name']; color: string }> = {
   goal: { name: 'football', color: colors.success },
   pen: { name: 'football', color: colors.success },
+  penaward: { name: 'alert-circle', color: colors.gold },
   own: { name: 'football-outline', color: colors.danger },
   missed: { name: 'close-circle-outline', color: colors.danger },
   yellow: { name: 'square', color: colors.gold },
@@ -196,7 +203,7 @@ export function MatchTimeline({ events, homeId, homeName, awayName, homeGoals, a
 
       {items.map(({ key, e, kind, score, home }) => {
         const icon = ICON[kind];
-        const highlight = kind === 'goal' || kind === 'pen' || kind === 'own' || kind === 'red' || kind === 'woodwork' || kind === 'chance';
+        const highlight = kind === 'goal' || kind === 'pen' || kind === 'penaward' || kind === 'own' || kind === 'red' || kind === 'woodwork' || kind === 'chance';
         return (
           <View key={key} style={[styles.item, highlight && styles.itemHighlight]}>
             <View style={styles.minuteCol}>

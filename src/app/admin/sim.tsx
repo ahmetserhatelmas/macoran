@@ -87,6 +87,8 @@ export default function SimAdminScreen() {
   const settings = data?.settings;
   const leagues = data?.leagues ?? [];
   const started = leagues.filter((l) => l.sim_started_at);
+  const testLive = data?.test_matches?.live ?? 0;
+  const testCount = data?.test_matches?.count ?? 0;
 
   return (
     <Screen>
@@ -143,6 +145,54 @@ export default function SimAdminScreen() {
               Başlatılan lig: {started.length} · Motor her 15 saniyede bir
               çalışır; saati gelen maçlar otomatik başlar.
             </Muted>
+            <Button
+              title="Canlı skora müdahale"
+              size="sm"
+              icon="football"
+              onPress={() => router.push("/admin/live")}
+            />
+            <Button
+              title="Test maçları başlat"
+              size="sm"
+              icon="flask"
+              variant="secondary"
+              loading={busy === "test-matches"}
+              onPress={() =>
+                run("test-matches", "start_test_matches", {}, (r) => {
+                  const matches = (r.matches as { home: string; away: string }[]) ?? [];
+                  Alert.alert(
+                    "Test maçları",
+                    `${matches.length} rastgele maç canlı açıldı. Puan durumu ve krallıklara yazılmaz. Canlı sekmesinde “Test Maçları” olarak görünür.`,
+                  );
+                })
+              }
+            />
+            {testCount > 0 ? (
+              <Button
+                title={testLive ? `Test maçlarını durdur (${testLive})` : "Test maçlarını durdur"}
+                size="sm"
+                icon="stop"
+                variant="danger"
+                loading={busy === "test-stop"}
+                onPress={() =>
+                  Alert.alert(
+                    "Test maçlarını durdur",
+                    "Açık test maçları iptal edilir, bekleyen kuponlar iade edilir.",
+                    [
+                      { text: "Vazgeç", style: "cancel" },
+                      {
+                        text: "Durdur",
+                        style: "destructive",
+                        onPress: () =>
+                          run("test-stop", "stop_test_matches", {}, (r) => {
+                            Alert.alert("Test maçları durdu", `${Number(r.archived ?? 0)} maç kapatıldı.`);
+                          }),
+                      },
+                    ],
+                  )
+                }
+              />
+            ) : null}
           </View>
 
           {/* Hız */}
@@ -157,15 +207,51 @@ export default function SimAdminScreen() {
           <View style={{ gap: spacing.sm }}>
             <View style={styles.sectionHead}>
               <Text style={styles.sectionTitle}>Ligler</Text>
-              {leagues.some((l) => !l.sim_started_at) ? (
-                <Button
-                  title="Hepsini başlat"
-                  size="sm"
-                  icon="play"
-                  loading={busy === "league-all"}
-                  onPress={() => setStartTarget("all")}
-                />
-              ) : null}
+              <View style={{ flexDirection: "row", gap: 8, flexShrink: 1 }}>
+                {leagues.some((l) => !l.sim_started_at) ? (
+                  <Button
+                    title="Hepsini başlat"
+                    size="sm"
+                    icon="play"
+                    loading={busy === "league-all"}
+                    onPress={() => setStartTarget("all")}
+                  />
+                ) : null}
+                {started.length ? (
+                  <Button
+                    title="Hepsini durdur"
+                    size="sm"
+                    icon="stop"
+                    variant="danger"
+                    loading={busy === "league-stop-all"}
+                    onPress={() =>
+                      Alert.alert(
+                        "Tüm ligleri durdur",
+                        `${started.length} aktif lig durdurulacak. Oynanmamış maçlar iptal edilir, bekleyen kuponlar iade edilir.`,
+                        [
+                          { text: "Vazgeç", style: "cancel" },
+                          {
+                            text: "Hepsini durdur",
+                            style: "destructive",
+                            onPress: () =>
+                              run("league-stop-all", "stop_leagues", {}, (r) => {
+                                const stopped = (r.stopped as { name: string }[]) ?? [];
+                                const failed = (r.failed as { name: string; error: string }[]) ?? [];
+                                const lines = [
+                                  `${stopped.length} lig durduruldu.`,
+                                  failed.length
+                                    ? `Durmayan: ${failed.map((f) => `${f.name} (${f.error})`).join(", ")}`
+                                    : "",
+                                ].filter(Boolean);
+                                Alert.alert(failed.length ? "Kısmen durdu" : "Ligler durdu", lines.join("\n"));
+                              }),
+                          },
+                        ],
+                      )
+                    }
+                  />
+                ) : null}
+              </View>
             </View>
             {leagues.map((l) => (
               <LeagueRow

@@ -26,6 +26,17 @@ export function mapPosition(p: string): Position {
   }
 }
 
+/** Aynı api_id bir lig+kupada iki kez gelmesin. */
+export function dedupePlayersByApiId<T extends { api_id?: number | null }>(rows: T[]): T[] {
+  const seen = new Set<number>();
+  return rows.filter((r) => {
+    if (r.api_id == null) return true;
+    if (seen.has(r.api_id)) return false;
+    seen.add(r.api_id);
+    return true;
+  });
+}
+
 export interface PlayerInsert {
   api_id: number | null;
   team_id: number;

@@ -4,7 +4,7 @@
 //  - Ortak dağılım (1Y ev, 1Y dep, 2Y ev, 2Y dep) x korner x penaltı -> tüm pazar olasılıkları
 //  - Marj eklenerek oranlar üretilir (maç öncesi ve canlı aynı yol)
 
-import { type Facts, MARKETS, type MarketDef, outcome, selectionsOf } from "./markets.ts";
+import { earlySettleSelection, type Facts, MARKETS, type MarketDef, type MatchPhase, outcome, selectionsOf } from "./markets.ts";
 import { poissonTable } from "./rng.ts";
 
 export interface RatingRow {
@@ -116,10 +116,26 @@ interface Remaining {
   pen: number;                                      // kalan penaltı olasılığı
 }
 
+/**
+ * Canlı tempo: maç öncesi λ ile şimdiye kadar atılan golü Bayes karıştırır.
+ * 29' 0-3 gibi açık maçlarda kalan gol beklentisi yükselir (3.5 Üst 1.17 olmaz);
+ * 70' 0-0'da düşer.
+ */
+function matchIntensity(exp: Expectation, s: LiveState): number {
+  if (s.phase === "pre" || s.phase === "FT") return 1;
+  const played = s.phase === "HT" ? 45 : clamp(s.t, 1, 95);
+  const expected = (exp.lambdaHome + exp.lambdaAway) * (played / 90);
+  const scored = s.h1 + s.a1 + s.h2 + s.a2;
+  const prior = 2.4;
+  return clamp((prior + scored) / (prior + Math.max(0.15, expected)), 0.55, 1.95);
+}
+
 function remaining(exp: Expectation, s: LiveState): Remaining {
   const lh1 = exp.lambdaHome * FIRST_HALF_SHARE, la1 = exp.lambdaAway * FIRST_HALF_SHARE;
   const lh2 = exp.lambdaHome * (1 - FIRST_HALF_SHARE), la2 = exp.lambdaAway * (1 - FIRST_HALF_SHARE);
   const c1 = exp.corners * FIRST_HALF_SHARE, c2 = exp.corners * (1 - FIRST_HALF_SHARE);
+  const pace = matchIntensity(exp, s);
+  const cornerPace = Math.sqrt(pace);
 
   // kırmızı kart etkisi
   const redH = Math.pow(0.72, s.redHome) * Math.pow(1.18, s.redAway);
@@ -139,13 +155,17 @@ function remaining(exp: Expectation, s: LiveState): Remaining {
     const f1 = r * boost;
     const penRem = exp.penalty * (0.46 * r + 0.54);
     return {
-      h1: lh1 * f1 * redH, a1: la1 * f1 * redA,
-      h2: lh2 * redH * stateH, a2: la2 * redA * stateA,
-      c1: c1 * r, c2, pen: s.penalty ? 0 : penRem,
+      h1: lh1 * f1 * redH * pace, a1: la1 * f1 * redA * pace,
+      h2: lh2 * redH * stateH * pace, a2: la2 * redA * stateA * pace,
+      c1: c1 * r * cornerPace, c2: c2 * cornerPace, pen: s.penalty ? 0 : penRem,
     };
   }
   if (s.phase === "HT") {
-    return { h1: 0, a1: 0, h2: lh2 * redH * stateH, a2: la2 * redA * stateA, c1: 0, c2, pen: s.penalty ? 0 : exp.penalty * 0.54 };
+    return {
+      h1: 0, a1: 0,
+      h2: lh2 * redH * stateH * pace, a2: la2 * redA * stateA * pace,
+      c1: 0, c2: c2 * cornerPace, pen: s.penalty ? 0 : exp.penalty * 0.54,
+    };
   }
   if (s.phase === "2H") {
     const r = clamp((94 - s.t) / 49, 0, 1);
@@ -153,8 +173,8 @@ function remaining(exp: Expectation, s: LiveState): Remaining {
     const f2 = r * boost;
     return {
       h1: 0, a1: 0,
-      h2: lh2 * f2 * redH * stateH, a2: la2 * f2 * redA * stateA,
-      c1: 0, c2: c2 * r, pen: s.penalty ? 0 : exp.penalty * 0.54 * r,
+      h2: lh2 * f2 * redH * stateH * pace, a2: la2 * f2 * redA * stateA * pace,
+      c1: 0, c2: c2 * r * cornerPace, pen: s.penalty ? 0 : exp.penalty * 0.54 * r,
     };
   }
   return { h1: 0, a1: 0, h2: 0, a2: 0, c1: 0, c2: 0, pen: 0 };
@@ -175,6 +195,25 @@ export interface MarketProbs {
 const MAX_GOALS = 7;   // yarı başına kuyruk sınırı
 const MAX_CORNERS = 22;
 
+function marketLines(m: MarketDef, state: LiveState): number[] {
+  const live = state.phase === "1H" || state.phase === "HT" || state.phase === "2H";
+  if (!live || m.kind !== "goals") return m.lines;
+  let cur: number | null = null;
+  switch (m.code) {
+    case "OU": cur = state.h1 + state.a1 + state.h2 + state.a2; break;
+    case "HOU": cur = state.h1 + state.h2; break;
+    case "AOU": cur = state.a1 + state.a2; break;
+    case "HTOU": cur = state.h1 + state.a1; break;
+    case "HTHOU": cur = state.h1; break;
+    case "HTAOU": cur = state.a1; break;
+    default: return m.lines;
+  }
+  const maxLine = Math.min(12.5, cur + 3.5);
+  const lines: number[] = [];
+  for (let x = 0.5; x <= maxLine + 1e-9; x += 1) lines.push(Math.round(x * 10) / 10);
+  return lines;
+}
+
 export function computeProbabilities(exp: Expectation, state: LiveState = PRE_STATE): MarketProbs[] {
   const rem = remaining(exp, state);
   const th1 = poissonTable(rem.h1, MAX_GOALS), ta1 = poissonTable(rem.a1, MAX_GOALS);
@@ -189,7 +228,7 @@ export function computeProbabilities(exp: Expectation, state: LiveState = PRE_ST
   const corner1hMarkets: { m: MarketDef; line: number }[] = [];
   const penMarkets: { m: MarketDef; line: number }[] = [];
   for (const m of MARKETS) {
-    for (const line of m.lines) {
+    for (const line of marketLines(m, state)) {
       accs.set(key(m, line), { win: new Map(), voidMass: 0 });
       const entry = { m, line };
       if (m.kind === "goals") goalMarkets.push(entry);
@@ -244,20 +283,39 @@ export function computeProbabilities(exp: Expectation, state: LiveState = PRE_ST
     add(pm.m, pm.line, { ...fc, penalty: false }, 1 - pYes);
   }
 
+  const livePhase: MatchPhase | null =
+    state.phase === "1H" || state.phase === "HT" || state.phase === "2H" ? state.phase : null;
+  const nowFacts: Facts = {
+    h1: state.h1, a1: state.a1, h2: state.h2, a2: state.a2,
+    corners: state.corners, corners1h: state.corners1h, penalty: state.penalty,
+  };
+  const twoWayClose = livePhase ? 0.90 : 0.94;
+
   const out: MarketProbs[] = [];
   for (const m of MARKETS) {
-    for (const line of m.lines) {
+    for (const line of marketLines(m, state)) {
       const acc = accs.get(key(m, line))!;
       const live = 1 - acc.voidMass;
+      const sels = selectionsOf(m, line);
+      const twoWay = sels.length === 2;
       const probs = new Map<string, number>();
-      let decided = false;
-      if (live <= 1e-6) {
-        decided = true;
-      } else {
-        for (const s of selectionsOf(m, line)) {
+      let decided = live <= 1e-6;
+      if (livePhase && twoWay && !decided) {
+        for (const s of sels) {
+          if (earlySettleSelection(m.code, s, line, nowFacts, livePhase)) {
+            decided = true;
+            break;
+          }
+        }
+      }
+      if (!decided && live > 1e-6) {
+        for (const s of sels) {
+          if (livePhase && earlySettleSelection(m.code, s, line, nowFacts, livePhase) === "lost") continue;
           const p = (acc.win.get(s) ?? 0) / live;
           probs.set(s, p);
-          if (p >= 0.985) decided = true;
+          // İki yönlü pazarda neredeyse kesin seçim = pazar bitti (2-0'da 0.5 Alt 10.00 açılmaz).
+          // MS gibi çok seçeneklide %97 favori tüm pazarı kapatmasın.
+          if (p >= 1 - 1e-6 || (twoWay && p > twoWayClose)) decided = true;
         }
       }
       out.push({ code: m.code, line, probs, decided });
@@ -285,7 +343,8 @@ export const BOOKMAKER = "Macoran";
 const MIN_ODD = 1.01;
 const MAX_ODD = 150;
 const MIN_PROB = 0.004;   // bunun altı sunulmaz
-const MAX_PROB = 0.97;    // neredeyse kesin seçimler sunulmaz
+const MAX_PROB = 0.94;    // neredeyse kesin iki yönlü pazar kapanır
+const MAX_PROB_LIVE = 0.90;
 
 export function priceOdds(
   fixtureId: number,
@@ -301,30 +360,66 @@ export function priceOdds(
     const def = MARKETS.find((m) => m.code === mp.code)!;
     const mul = def.marginMul ?? 1;
     const effMargin = margin * mul;
+    const twoWay = selectionsOf(def, mp.line).length === 2;
+    const maxP = isLive && twoWay ? MAX_PROB_LIVE : twoWay ? MAX_PROB : 0.97;
     const offered: [string, number][] = [];
+    const locks: [string, number][] = [];
+    const tinies: [string, number][] = [];
     let fullSum = 0;
     for (const [sel, p] of mp.probs) {
       fullSum += p;
-      if (p < MIN_PROB || p > MAX_PROB) continue;
+      if (p > maxP) { locks.push([sel, p]); continue; }
+      if (p < MIN_PROB) { tinies.push([sel, p]); continue; }
       offered.push([sel, p]);
     }
-    if (offered.length < 2) continue;
+    // Alt/Üst, KG: bir taraf kilitliyken ölü tarafı 10.00'dan açma. MS'de sürpriz açık kalır.
+    if (twoWay && locks.length) continue;
+    if (locks.length && tinies.length && !twoWay) {
+      for (const t of tinies) if (t[1] > 0) offered.push(t);
+    }
+    if (!offered.length && !locks.length) continue;
     // Sunulmayan (çok düşük olasılıklı) seçimlerin kütlesi kalanlara dağıtılır.
-    // fullSum tek kazananlı pazarlarda 1, çifte şans gibi çok kazananlı pazarlarda >1'dir;
-    // oranlar seçimin kendi olasılığına göre verilir.
-    // Marj, olasılığa "kalan kütle" oranında eklenir: favoriye az, sürprize çok
-    // (Σ implied = 1 + marj). Çok kazananlı pazarlar (çifte şans) 2 yollu sayılır.
+    // Kilitlenen favorinin kütlesi dağıtılmaz — yoksa sürpriz oranları 10'a düşer.
     const multiWinner = fullSum > 1.2;
-    const offeredSum = offered.reduce((a, [, p]) => a + p, 0);
-    const scale = multiWinner || fullSum <= 0 ? 1 : fullSum / offeredSum;
-    const spread = multiWinner ? 1 : Math.max(1, offered.length - 1);
-    for (const [sel, p] of offered) {
-      const fair = Math.min(0.995, p * scale);
-      const implied = fair + effMargin * (1 - fair) / spread;
-      const odd = clamp(Math.round((1 / implied) * 100) / 100, MIN_ODD, MAX_ODD);
+    const offeredPos = offered.filter(([, p]) => p > 0);
+    const offeredSum = offeredPos.reduce((a, [, p]) => a + p, 0);
+    const longshotsBesideLock = locks.length > 0 && offeredPos.length > 0 &&
+      offeredPos.every(([, p]) => p < 0.08);
+
+    if (longshotsBesideLock) {
+      // 0-3 / 73': beraberlik ve ev galibiyeti ikisi de ~%0; marj bölününce ikisi de ~18 oluyordu.
+      // Gerçek olasılık oranını koru, çok küçük toplamı oynanabilir banda çek.
+      const lift = offeredSum > 0 && offeredSum < 0.06 ? 0.06 / offeredSum : 1;
+      for (const [sel, p] of offeredPos) {
+        const fair = Math.min(0.2, p * lift);
+        const implied = Math.min(0.85, fair * (1 + effMargin));
+        const odd = clamp(Math.round((1 / implied) * 100) / 100, MIN_ODD, MAX_ODD);
+        rows.push({
+          fixture_id: fixtureId, market: mp.code, selection: sel, line: mp.line,
+          odd, suspended, is_live: isLive, bookmaker: BOOKMAKER, updated_at: now,
+        });
+      }
+    } else {
+      const scale = locks.length || multiWinner || fullSum <= 0 ? 1 : fullSum / offeredSum;
+      const spread = multiWinner ? 1 : Math.max(1, offeredPos.length - (locks.length ? 0 : 1));
+      for (const [sel, p] of offeredPos) {
+        let fair = Math.min(0.995, p * scale);
+        if (isLive && !multiWinner && fair > 0.84) {
+          const t = (fair - 0.84) / (0.995 - 0.84);
+          fair = fair + t * t * (0.992 - fair) * 0.55;
+        }
+        const implied = fair + effMargin * (1 - fair) / spread;
+        const odd = clamp(Math.round((1 / implied) * 100) / 100, MIN_ODD, MAX_ODD);
+        rows.push({
+          fixture_id: fixtureId, market: mp.code, selection: sel, line: mp.line,
+          odd, suspended, is_live: isLive, bookmaker: BOOKMAKER, updated_at: now,
+        });
+      }
+    }
+    for (const [sel] of locks) {
       rows.push({
         fixture_id: fixtureId, market: mp.code, selection: sel, line: mp.line,
-        odd, suspended, is_live: isLive, bookmaker: BOOKMAKER, updated_at: now,
+        odd: MIN_ODD, suspended: true, is_live: isLive, bookmaker: BOOKMAKER, updated_at: now,
       });
     }
   }

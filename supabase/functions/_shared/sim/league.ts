@@ -2,6 +2,9 @@
 
 import { Rng } from "./rng.ts";
 
+/** Oran testi için sentetik lig; puan / krallık / forma yazılmaz. */
+export const TEST_LEAGUE_ID = 99999;
+
 export interface ScheduleConfig {
   /** ilk haftanın günü (ISO, UTC) */
   start_at: string;
