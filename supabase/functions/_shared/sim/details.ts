@@ -1,7 +1,7 @@
 // fixture_details yazımı (olaylar, istatistikler, kadrolar)
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import type { TeamInfo } from "./league.ts";
-import { countUpTo, snapshot, type PlayerRef, type Script } from "./script.ts";
+import { countUpTo, timelineEvents, type PlayerRef, type Script } from "./script.ts";
 
 export interface DetailFixture {
   id: number;
@@ -10,7 +10,7 @@ export interface DetailFixture {
 }
 
 function packPlayer(p: PlayerRef) {
-  return { id: p.id, name: p.name, number: p.number, position: p.position, photo: p.photo ?? null };
+  return { id: p.id, name: p.name, number: p.number, position: p.position, photo: p.photo ?? null, grid: p.grid ?? null };
 }
 
 export async function writeDetails(
@@ -24,9 +24,9 @@ export async function writeDetails(
 ) {
   const home = teams.get(f.home_team_id) ?? { id: f.home_team_id, name: "Ev Sahibi", logo: null };
   const away = teams.get(f.away_team_id) ?? { id: f.away_team_id, name: "Deplasman", logo: null };
-  const snap = snapshot(script, k, maxEvents);
+  const packed = timelineEvents(script, k, maxEvents);
 
-  const events = snap.events.map((e) => {
+  const events = packed.map((e) => {
     const benefitsHome = e.side === "home";
     const teamSide = e.type === "Goal" && e.detail === "Own Goal" ? !benefitsHome : benefitsHome;
     const t = teamSide ? home : away;
@@ -49,7 +49,7 @@ export async function writeDetails(
     const fouls = countUpTo(s.fouls, k), offsides = countUpTo(s.offsides, k), saves = countUpTo(s.saves, k);
     const blocked = Math.floor((shots - sot) * 0.3);
     const off = Math.max(0, shots - sot - blocked);
-    const cards = snap.events.filter((e) => e.side === side && e.type === "Card");
+    const cards = packed.filter((e) => e.side === side && e.type === "Card");
     const yellow = cards.filter((e) => e.detail === "Yellow Card" || e.detail === "Second Yellow card").length;
     const red = cards.filter((e) => e.detail === "Red Card" || e.detail === "Second Yellow card").length;
     const passes = Math.round(s.passes * progress);

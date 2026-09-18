@@ -608,7 +608,7 @@ function StartLeagueForm({
       <Text style={styles.modalTitle}>{title}</Text>
       <Muted style={{ fontSize: 12 }}>
         {all
-          ? "Her lig bu sezonun gerçek fikstürünü (eşleşmeler, günler, saatler) alır; ilk hafta seçtiğin tarihe hizalanır. Tarihi belirsiz haftalar o ligin alışılmış günlerine göre tahmin edilir. Kadrolar yoksa sentetik üretilir."
+          ? "Her lig bu sezonun gerçek fikstürünü (eşleşmeler, günler, saatler) alır; ilk hafta seçtiğin tarihe hizalanır. Tarihi belirsiz haftalar o ligin alışılmış günlerine göre tahmin edilir. Kadrolar API-Football'dan çekilir."
           : "Bu sezonun gerçek fikstürü kullanılır (kim kiminle, hangi gün/saat). İlk hafta aşağıdaki tarihe kaydırılır; 10. hafta gibi günü net olmayan maçlar ligin tipik günlerine göre yerleştirilir."}
       </Muted>
       <Input

@@ -117,9 +117,10 @@ interface Remaining {
 }
 
 /**
- * Canlı tempo: maç öncesi λ ile şimdiye kadar atılan golü Bayes karıştırır.
- * 29' 0-3 gibi açık maçlarda kalan gol beklentisi yükselir (3.5 Üst 1.17 olmaz);
- * 70' 0-0'da düşer.
+ * Canlı tempo: atılan gol, maç öncesi λ ile karışır.
+ * Çok gollü maçta kalan beklenti hemen yükselir (3.5 Üst ölmez).
+ * 0-0'da 1. yarıda tempoyu düşürmez — 42' 0-0'da 0.5 Üst ~1.50 olmasın;
+ * asıl kırılma 2. yarıda (70' 0-0).
  */
 function matchIntensity(exp: Expectation, s: LiveState): number {
   if (s.phase === "pre" || s.phase === "FT") return 1;
@@ -127,7 +128,12 @@ function matchIntensity(exp: Expectation, s: LiveState): number {
   const expected = (exp.lambdaHome + exp.lambdaAway) * (played / 90);
   const scored = s.h1 + s.a1 + s.h2 + s.a2;
   const prior = 2.4;
-  return clamp((prior + scored) / (prior + Math.max(0.15, expected)), 0.55, 1.95);
+  const raw = (prior + scored) / (prior + Math.max(0.15, expected));
+  if (raw >= 1) return clamp(raw, 1, 1.95);
+  const fade = s.phase === "1H" ? clamp((played - 40) / 50, 0, 0.35)
+    : s.phase === "HT" ? 0.22
+    : clamp((played - 45) / 42, 0, 1);
+  return clamp(1 + (raw - 1) * fade, 0.55, 1);
 }
 
 function remaining(exp: Expectation, s: LiveState): Remaining {
@@ -195,23 +201,39 @@ export interface MarketProbs {
 const MAX_GOALS = 7;   // yarı başına kuyruk sınırı
 const MAX_CORNERS = 22;
 
+function extraOuLines(floor: number, maxLine: number): number[] {
+  const lines: number[] = [];
+  for (let x = floor; x <= maxLine + 1e-9; x += 1) lines.push(Math.round(x * 10) / 10);
+  return lines;
+}
+
 function marketLines(m: MarketDef, state: LiveState): number[] {
   const live = state.phase === "1H" || state.phase === "HT" || state.phase === "2H";
-  if (!live || m.kind !== "goals") return m.lines;
-  let cur: number | null = null;
-  switch (m.code) {
-    case "OU": cur = state.h1 + state.a1 + state.h2 + state.a2; break;
-    case "HOU": cur = state.h1 + state.h2; break;
-    case "AOU": cur = state.a1 + state.a2; break;
-    case "HTOU": cur = state.h1 + state.a1; break;
-    case "HTHOU": cur = state.h1; break;
-    case "HTAOU": cur = state.a1; break;
-    default: return m.lines;
+  if (!live) return m.lines;
+  if (m.kind === "goals") {
+    let cur: number | null = null;
+    switch (m.code) {
+      case "OU": cur = state.h1 + state.a1 + state.h2 + state.a2; break;
+      case "HOU": cur = state.h1 + state.h2; break;
+      case "AOU": cur = state.a1 + state.a2; break;
+      case "HTOU": cur = state.h1 + state.a1; break;
+      case "HTHOU": cur = state.h1; break;
+      case "HTAOU": cur = state.a1; break;
+      default: return m.lines;
+    }
+    return extraOuLines(0.5, Math.min(12.5, cur + 3.5));
   }
-  const maxLine = Math.min(12.5, cur + 3.5);
-  const lines: number[] = [];
-  for (let x = 0.5; x <= maxLine + 1e-9; x += 1) lines.push(Math.round(x * 10) / 10);
-  return lines;
+  if (m.code === "CORNOU") {
+    const floor = m.lines[0] ?? 8.5;
+    const baseMax = m.lines[m.lines.length - 1] ?? 11.5;
+    return extraOuLines(floor, Math.min(24.5, Math.max(baseMax, state.corners + 3.5)));
+  }
+  if (m.code === "HTCORNOU") {
+    const floor = m.lines[0] ?? 3.5;
+    const baseMax = m.lines[m.lines.length - 1] ?? 5.5;
+    return extraOuLines(floor, Math.min(14.5, Math.max(baseMax, state.corners1h + 3.5)));
+  }
+  return m.lines;
 }
 
 export function computeProbabilities(exp: Expectation, state: LiveState = PRE_STATE): MarketProbs[] {

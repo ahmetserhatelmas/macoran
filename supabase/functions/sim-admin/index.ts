@@ -11,9 +11,9 @@ import { computeProbabilities, type LiveState, PRE_STATE, priceOdds } from "../_
 import { hashSeed, Rng } from "../_shared/sim/rng.ts";
 import { writeDetails } from "../_shared/sim/details.ts";
 import { dropAdminGoal, elapsedToKey, generateScript, injectLiveGoals, rewriteRemainingScore, snapshot, type Scenario, type ScenarioGoal, type Script } from "../_shared/sim/script.ts";
-import { fixtureExpectation, loadLeagues, loadPlayers, loadRatings, loadSettings, lockLiveBetting, replaceOdds, settleLiveDecided, totalRounds } from "../_shared/sim/store.ts";
+import { fixtureExpectation, loadLeagues, loadPlayers, loadRatings, loadSettings, lockLiveBetting, mapLimit, replaceOdds, settleLiveDecided, totalRounds } from "../_shared/sim/store.ts";
 import {
-  type ApiStandingRowLite, type PlayerInsert, buildPlayersFromApi, buildSyntheticPlayers, dedupePlayersByApiId, fetchSquad, ratingsFromStandings,
+  type ApiStandingRowLite, buildPlayersFromApi, buildSyntheticPlayers, fetchRecentLineup, fetchSquad, ratingsFromStandings, saveTeamPlayers,
 } from "../_shared/sim/squads.ts";
 
 const SECOND_TIER = new Set([204, 40, 79, 141, 136, 62]);
@@ -191,26 +191,6 @@ async function initRatings(db: SupabaseClient, leagueId: number, overwrite: bool
   return { ok: true, teams: teams.length, rated: rows.length, defaulted: missing.length };
 }
 
-/** api_id küresel tekil: lig+kupa aynı oyuncuyu iki kez yazmasın. */
-async function saveTeamPlayers(db: SupabaseClient, teamId: number, rows: PlayerInsert[], replace: boolean) {
-  const unique = dedupePlayersByApiId(rows);
-  const apiIds = unique.map((r) => r.api_id).filter((id): id is number => id != null);
-  const taken = new Set<number>();
-  if (apiIds.length) {
-    for (let i = 0; i < apiIds.length; i += 200) {
-      const { data } = await db.from("players").select("api_id, team_id").in("api_id", apiIds.slice(i, i + 200));
-      for (const r of data ?? []) {
-        if (r.api_id == null) continue;
-        if (replace && r.team_id === teamId) continue;
-        taken.add(r.api_id as number);
-      }
-    }
-  }
-  if (replace) await db.from("players").delete().eq("team_id", teamId);
-  const fresh = unique.filter((r) => r.api_id == null || !taken.has(r.api_id));
-  if (fresh.length) await upsertChunked(db, "players", fresh as unknown as Record<string, unknown>[]);
-}
-
 async function importSquads(db: SupabaseClient, leagueId: number | null, force: boolean, budgetMs = 110_000) {
   let teamIds: number[];
   if (leagueId) {
@@ -221,17 +201,31 @@ async function importSquads(db: SupabaseClient, leagueId: number | null, force: 
     teamIds = [...new Set((data ?? []).map((r) => r.team_id as number))];
   }
   const { data: have } = await db.from("players").select("team_id, api_id").in("team_id", teamIds);
-  const realSet = new Set((have ?? []).filter((r) => r.api_id != null).map((r) => r.team_id as number));
-  const haveSet = new Set((have ?? []).map((r) => r.team_id as number));
-  const todo = force ? teamIds : teamIds.filter((id) => !realSet.has(id));
-  if (!todo.length) return { ok: true, imported: 0, synthetic: 0, skipped: teamIds.length };
+  const realN = new Map<number, number>();
+  const fakeN = new Map<number, number>();
+  for (const r of have ?? []) {
+    const id = r.team_id as number;
+    if (r.api_id != null) realN.set(id, (realN.get(id) ?? 0) + 1);
+    else fakeN.set(id, (fakeN.get(id) ?? 0) + 1);
+  }
+  // Gerçek kadrosu yeterince olan takımdan uydurma isimleri sil
+  const mixed = teamIds.filter((id) => (realN.get(id) ?? 0) >= 11 && (fakeN.get(id) ?? 0) > 0);
+  for (const teamId of mixed) {
+    await db.from("players").delete().eq("team_id", teamId).is("api_id", null);
+    fakeN.delete(teamId);
+  }
+
+  const todo = force
+    ? teamIds
+    : teamIds.filter((id) => (realN.get(id) ?? 0) < 11);
+  if (!todo.length) return { ok: true, imported: 0, synthetic: 0, skipped: teamIds.length, cleaned: mixed.length };
 
   const { data: ratings } = await db.from("team_ratings").select("team_id, attack, midfield, defense, goalkeeper").in("team_id", todo);
   const overall = new Map((ratings ?? []).map((r) => [r.team_id as number, (Number(r.attack) + Number(r.midfield) + Number(r.defense) + Number(r.goalkeeper)) / 4]));
 
   const key = apiKey();
   const api = key ? new ApiFootball(key) : null;
-  let imported = 0, synthetic = 0;
+  let imported = 0, synthetic = 0, skipped = 0;
   const started = Date.now();
   for (const teamId of todo) {
     const overtime = Date.now() - started > budgetMs;
@@ -245,11 +239,18 @@ async function importSquads(db: SupabaseClient, leagueId: number | null, force: 
         console.warn(`squad ${teamId}: ${errMsg(e)}`);
       }
     }
-    if (!rows) { rows = buildSyntheticPlayers(teamId, ov); synthetic++; } else imported++;
-    await saveTeamPlayers(db, teamId, rows, force || haveSet.has(teamId));
+    if (rows) {
+      await saveTeamPlayers(db, teamId, rows, true);
+      imported++;
+      continue;
+    }
+    // API varken uydurma kadro yazma; sonraki import dener.
+    if (api) { skipped++; continue; }
+    await saveTeamPlayers(db, teamId, buildSyntheticPlayers(teamId, ov), true);
+    synthetic++;
   }
-  await log(db, "sim-admin", true, `kadro: API ${imported}, sentetik ${synthetic}`, api?.requests ?? 0);
-  return { ok: true, imported, synthetic, remaining: todo.length - imported - synthetic, requests: api?.requests ?? 0 };
+  await log(db, "sim-admin", true, `kadro: API ${imported}, sentetik ${synthetic}, atlandı ${skipped}`, api?.requests ?? 0);
+  return { ok: true, imported, synthetic, remaining: skipped, requests: api?.requests ?? 0, cleaned: mixed.length };
 }
 
 // ---------------------------------------------------------------------
@@ -365,8 +366,8 @@ async function startLeague(db: SupabaseClient, body: Record<string, unknown>) {
   await initRatings(db, leagueId, false);
   await db.from("team_ratings").update({ sim_played: 0, sim_points: 0, sim_gf: 0, sim_ga: 0, sim_form: "" }).in("team_id", teams.map((t) => t.id));
 
-  // 2) Kadrolar (süre bütçesi dolunca kalan takımlar sentetik kadro alır)
-  const squads = await importSquads(db, leagueId, false, Number(body.squad_budget_ms ?? 110_000));
+  // 2) Kadrolar: her lig başlangıcında API'den güncel kadro (ayrılanlar düşer)
+  const squads = await importSquads(db, leagueId, true, Number(body.squad_budget_ms ?? 110_000));
 
   // 3) Eski fikstürler (API ya da önceki simülasyon) arşive
   const archived = await archiveLeagueFixtures(db, leagueId);
@@ -491,27 +492,28 @@ async function stopLeagues(db: SupabaseClient, body: Record<string, unknown>) {
   return { ok: failed.length === 0, stopped, skipped, failed };
 }
 
-/** API-Football kadrosu olan takımlar; yoksa çekip sentetiğin yerine yazar. */
+/** API'den güncel kadro çekip yazar (ayrılan oyuncular düşer). */
 async function ensureRealSquads(db: SupabaseClient, teamIds: number[]): Promise<number[]> {
   if (!teamIds.length) return [];
-  const { data: existing } = await db.from("players").select("team_id, api_id").in("team_id", teamIds);
-  const realCount = new Map<number, number>();
-  for (const r of existing ?? []) {
-    if (r.api_id != null) realCount.set(r.team_id as number, (realCount.get(r.team_id as number) ?? 0) + 1);
-  }
-  const ok = teamIds.filter((id) => (realCount.get(id) ?? 0) >= 11);
-  const need = teamIds.filter((id) => (realCount.get(id) ?? 0) < 11);
   const key = apiKey();
-  if (!need.length || !key) return ok;
+  if (!key) {
+    const { data: existing } = await db.from("players").select("team_id, api_id").in("team_id", teamIds);
+    const realCount = new Map<number, number>();
+    for (const r of existing ?? []) {
+      if (r.api_id != null) realCount.set(r.team_id as number, (realCount.get(r.team_id as number) ?? 0) + 1);
+    }
+    return teamIds.filter((id) => (realCount.get(id) ?? 0) >= 11);
+  }
 
   const api = new ApiFootball(key);
-  const { data: ratings } = await db.from("team_ratings").select("team_id, attack, midfield, defense, goalkeeper").in("team_id", need);
+  const { data: ratings } = await db.from("team_ratings").select("team_id, attack, midfield, defense, goalkeeper").in("team_id", teamIds);
   const overall = new Map((ratings ?? []).map((r) => [
     r.team_id as number,
     (Number(r.attack) + Number(r.midfield) + Number(r.defense) + Number(r.goalkeeper)) / 4,
   ]));
 
-  for (const teamId of need) {
+  const ok: number[] = [];
+  for (const teamId of teamIds) {
     try {
       const squad = await fetchSquad(api, teamId);
       if (!squad || squad.length < 11) continue;
@@ -541,11 +543,17 @@ async function startTestMatches(db: SupabaseClient) {
 
   const { data: pl } = await db.from("players").select("team_id, api_id");
   const realN = new Map<number, number>();
-  const anyN = new Map<number, number>();
+  const fakeIds: number[] = [];
   for (const r of pl ?? []) {
     const id = r.team_id as number;
-    anyN.set(id, (anyN.get(id) ?? 0) + 1);
     if (r.api_id != null) realN.set(id, (realN.get(id) ?? 0) + 1);
+    else fakeIds.push(id);
+  }
+  const fakeSet = new Set(fakeIds);
+  for (const teamId of [...realN.keys()]) {
+    if ((realN.get(teamId) ?? 0) >= 11 && fakeSet.has(teamId)) {
+      await db.from("players").delete().eq("team_id", teamId).is("api_id", null);
+    }
   }
   let ids = [...realN.entries()].filter(([, n]) => n >= 11).map(([id]) => id);
   if (ids.length < 20) {
@@ -557,12 +565,26 @@ async function startTestMatches(db: SupabaseClient) {
   const rng = new Rng(hashSeed("test-batch", now.toISOString()));
   ids = rng.shuffle(ids);
   if (ids.length < 2) {
-    ids = rng.shuffle([...anyN.entries()].filter(([, n]) => n >= 11).map(([id]) => id));
+    throw new Error("Test maçı için gerçek kadrolu yeterli takım yok. Lig başlatıp kadroların API'den gelmesini bekleyin.");
   }
   const n = Math.min(10, Math.floor(ids.length / 2));
   if (n < 1) throw new Error("Test maçı için yeterli takım yok");
   const used = ids.slice(0, n * 2);
   await ensureRealSquads(db, used);
+
+  const recents = new Map<number, NonNullable<Awaited<ReturnType<typeof fetchRecentLineup>>>>();
+  const key = apiKey();
+  if (key) {
+    const api = new ApiFootball(key);
+    await mapLimit(used, 3, async (teamId) => {
+      try {
+        const lu = await fetchRecentLineup(api, teamId);
+        if (lu) recents.set(teamId, lu);
+      } catch (e) {
+        console.warn(`lineup ${teamId}: ${errMsg(e)}`);
+      }
+    });
+  }
 
   const [{ data: teamRows }, settings, ratings, players] = await Promise.all([
     db.from("teams").select("id, name, logo").in("id", used),
@@ -605,8 +627,8 @@ async function startTestMatches(db: SupabaseClient) {
     const script = generateScript({
       seed,
       kickoff: now,
-      home: { id: home, name: teams.get(home)?.name ?? "Ev", players: players.get(home) ?? [] },
-      away: { id: away, name: teams.get(away)?.name ?? "Dep", players: players.get(away) ?? [] },
+      home: { id: home, name: teams.get(home)?.name ?? "Ev", players: players.get(home) ?? [], recent: recents.get(home) ?? null },
+      away: { id: away, name: teams.get(away)?.name ?? "Dep", players: players.get(away) ?? [], recent: recents.get(away) ?? null },
       exp,
       scenario: null,
     });

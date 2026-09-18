@@ -6,14 +6,16 @@
 //     takım formu, puan durumu
 //  4) Maç öncesi oranları üret / güç değiştiğinde yenile
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
-import { adminClient, authorize, errMsg, json, log, upsertChunked } from "../_shared/db.ts";
+import { adminClient, apiKey, authorize, errMsg, json, log, upsertChunked } from "../_shared/db.ts";
 import { matchClock } from "../_shared/sim/clock.ts";
 import { computeStandings, TEST_LEAGUE_ID, type TeamInfo } from "../_shared/sim/league.ts";
 import { type Facts, settleSelection } from "../_shared/sim/markets.ts";
 import { computeProbabilities, type LiveState, type OddRow, PRE_STATE, priceOdds } from "../_shared/sim/model.ts";
 import { hashSeed } from "../_shared/sim/rng.ts";
 import { writeDetails } from "../_shared/sim/details.ts";
-import { generateScript, isOddsTriggerEvent, type Scenario, type Script, type SimEvent, snapshot } from "../_shared/sim/script.ts";
+import { generateScript, isOddsTriggerEvent, pendingPenaltyKick, type Scenario, type Script, type SimEvent, snapshot } from "../_shared/sim/script.ts";
+import { fetchRecentLineup } from "../_shared/sim/squads.ts";
+import { ApiFootball } from "../_shared/api.ts";
 import {
   acquireTickLock, deleteOdds, fixtureExpectation, type LeagueSim, loadLeagues, loadPlayers, loadRatings, loadSettings,
   lockLiveBetting, mapLimit, releaseTickLock, replaceOdds, settleLiveDecided, type SimSettings, totalRounds,
@@ -91,28 +93,28 @@ Deno.serve(async (req) => {
     const smMap = new Map((smRes.data ?? []).map((s) => [Number((s as SimMatchRow).fixture_id), s as SimMatchRow]));
 
     // ------------------------------------------------------------------
-    // 1) Başlaması gereken maçlar
-    // ------------------------------------------------------------------
-    await mapLimit(due, CONCURRENCY, async (f) => {
-      await startMatch(ctx, f, leagues.get(f.league_id)!);
-      started.push(String(f.id));
-    });
-
-    // ------------------------------------------------------------------
-    // 2) Canlı maçlar
+    // 1) Canlı maçlar — kickoff API'si takılsa bile dakika aksın
     // ------------------------------------------------------------------
     await mapLimit(liveRows, CONCURRENCY, async (f) => {
       const sm = smMap.get(f.id);
       if (!sm?.script || !sm.kickoff_at) {
-        // script yok: yeniden başlat
         const league = leagues.get(f.league_id) ?? {
           id: f.league_id, name: "Test Maçları", season: f.season, sim_started_at: now.toISOString(), sim_config: { rounds: 34 }, odds_dirty_at: null,
         };
-        await startMatch(ctx, f, league);
+        await startMatch(ctx, f, league, { skipApi: Date.now() - t0 > 25_000 });
         return;
       }
       const done = await advanceMatch(ctx, f, sm);
       if (done) finished.push(String(f.id));
+    });
+
+    // ------------------------------------------------------------------
+    // 2) Başlaması gereken maçlar (tik başına az; API yavaş)
+    // ------------------------------------------------------------------
+    const dueNow = Date.now() - t0 > 40_000 ? [] : due.slice(0, 6);
+    await mapLimit(dueNow, 3, async (f) => {
+      await startMatch(ctx, f, leagues.get(f.league_id)!, { skipApi: Date.now() - t0 > 35_000 });
+      started.push(String(f.id));
     });
 
     // ------------------------------------------------------------------
@@ -138,9 +140,27 @@ Deno.serve(async (req) => {
 // =====================================================================
 // Maç başlatma
 // =====================================================================
-async function startMatch(ctx: Ctx, f: FixtureRow, league: LeagueSim) {
+async function startMatch(ctx: Ctx, f: FixtureRow, league: LeagueSim, opts?: { skipApi?: boolean }) {
   const { db, settings, teams, ratings, now } = ctx;
   const teamIds = [f.home_team_id, f.away_team_id];
+  const key = opts?.skipApi ? "" : apiKey();
+  let recentHome = null as Awaited<ReturnType<typeof fetchRecentLineup>>;
+  let recentAway = null as Awaited<ReturnType<typeof fetchRecentLineup>>;
+  if (key) {
+    const api = new ApiFootball(key);
+    const [rh, ra] = await Promise.all([
+      fetchRecentLineup(api, f.home_team_id).catch((e) => {
+        console.warn(`lineup ${f.home_team_id}: ${errMsg(e)}`);
+        return null;
+      }),
+      fetchRecentLineup(api, f.away_team_id).catch((e) => {
+        console.warn(`lineup ${f.away_team_id}: ${errMsg(e)}`);
+        return null;
+      }),
+    ]);
+    recentHome = rh;
+    recentAway = ra;
+  }
   const [players, smRes] = await Promise.all([
     loadPlayers(db, teamIds),
     db.from("sim_matches").select("seed, scenario").eq("fixture_id", f.id).maybeSingle(),
@@ -152,8 +172,8 @@ async function startMatch(ctx: Ctx, f: FixtureRow, league: LeagueSim) {
   const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(league));
   const script = generateScript({
     seed, kickoff: now,
-    home: { id: f.home_team_id, name: teams.get(f.home_team_id)?.name ?? "Ev", players: players.get(f.home_team_id) ?? [] },
-    away: { id: f.away_team_id, name: teams.get(f.away_team_id)?.name ?? "Dep", players: players.get(f.away_team_id) ?? [] },
+    home: { id: f.home_team_id, name: teams.get(f.home_team_id)?.name ?? "Ev", players: players.get(f.home_team_id) ?? [], recent: recentHome },
+    away: { id: f.away_team_id, name: teams.get(f.away_team_id)?.name ?? "Dep", players: players.get(f.away_team_id) ?? [], recent: recentAway },
     exp, scenario,
   });
 
@@ -234,20 +254,20 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
   }
 
   let suspendedUntil = sm.suspended_until ? new Date(sm.suspended_until) : null;
-  if (trigger) {
-    const hold = Math.max(5, Number(settings.goal_suspend_seconds) || 40);
+  const hold = Math.max(5, Number(settings.goal_suspend_seconds) || 40);
+  const waitingKick = pendingPenaltyKick(script.events, revealCount);
+  if (trigger || (waitingKick && (!suspendedUntil || suspendedUntil <= now))) {
     suspendedUntil = new Date(now.getTime() + hold * 1000);
     // Skor / anlatım yazılmadan bahsi kapat — eski oranla kupon penceresi olmasın
     await lockLiveBetting(db, f.id, suspendedUntil, now);
   }
-  const isSuspended = !!suspendedUntil && suspendedUntil > now;
+  const isSuspended = waitingKick || (!!suspendedUntil && suspendedUntil > now);
   const reprice = !trigger && !isSuspended && (clock.abs !== sm.odds_minute || suspendedUntil !== null);
 
   const smUpdate: Record<string, unknown> = { revealed: revealCount, last_minute: clock.abs };
   const writes: PromiseLike<unknown>[] = [];
 
-  const minuteChanged = clock.abs !== sm.last_minute;
-  if (minuteChanged || incoming.length) writes.push(writeDetails(db, f, script, teams, clock.key, false, revealCount));
+  writes.push(writeDetails(db, f, script, teams, clock.key, false, revealCount));
 
   if (isSuspended) {
     smUpdate.suspended_until = suspendedUntil!.toISOString();

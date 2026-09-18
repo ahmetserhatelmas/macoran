@@ -114,6 +114,7 @@ export interface LineupPlayer {
   number: number | null;
   position: 'GK' | 'DEF' | 'MID' | 'FWD';
   photo: string | null;
+  grid?: string | null;
 }
 export interface TeamLineup {
   team: { id: number; name: string; logo: string | null };

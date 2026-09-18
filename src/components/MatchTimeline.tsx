@@ -18,7 +18,7 @@ interface Props {
   finished: boolean;
 }
 
-type Kind = 'goal' | 'own' | 'pen' | 'penaward' | 'missed' | 'yellow' | 'red' | 'sub' | 'var' | 'injury' | 'woodwork' | 'chance' | 'save' | 'attack' | 'other';
+type Kind = 'goal' | 'own' | 'pen' | 'penaward' | 'missed' | 'yellow' | 'red' | 'sub' | 'var' | 'injury' | 'woodwork' | 'chance' | 'save' | 'attack' | 'corner' | 'foul' | 'throwin' | 'offside' | 'goalkick' | 'other';
 
 function classify(e: FixtureEvent): Kind {
   const d = (e.detail ?? '').toLowerCase();
@@ -35,6 +35,14 @@ function classify(e: FixtureEvent): Kind {
     return 'var';
   }
   if (e.type === 'Injury') return 'injury';
+  if (e.type === 'Play') {
+    if (d.includes('corner')) return 'corner';
+    if (d.includes('foul')) return 'foul';
+    if (d.includes('throw')) return 'throwin';
+    if (d.includes('offside')) return 'offside';
+    if (d.includes('goal kick')) return 'goalkick';
+    return 'other';
+  }
   if (e.type === 'Chance') {
     if (d.includes('wood')) return 'woodwork';
     if (d.includes('save')) return 'save';
@@ -93,6 +101,16 @@ export function narrate(e: FixtureEvent, kind: Kind, score?: string): string {
       return e.comments
         ? `${e.comments}.`
         : `Tehlikeli atak: ${p} (${team}) ceza sahasına iniyor, savunma son anda müdahale ediyor.`;
+    case 'corner':
+      return e.comments ? `${e.comments}.` : `Korner: ${p !== 'Oyuncu' ? p : team} köşe vuruşu kazandı.`;
+    case 'foul':
+      return e.comments ? `${e.comments}.` : `Faul: ${p} (${team}) rakibini düşürüyor.`;
+    case 'throwin':
+      return e.comments ? `${e.comments}.` : `Taç: ${p !== 'Oyuncu' ? p : team} oyunu kenardan başlatıyor.`;
+    case 'offside':
+      return e.comments ? `${e.comments}.` : `Ofsayt: ${p} (${team}) erken harekete geçiyor.`;
+    case 'goalkick':
+      return e.comments ? `${e.comments}.` : `Kaleci vuruşu: ${p !== 'Oyuncu' ? p : team} oyunu başlatıyor.`;
     default:
       return `${e.detail} — ${p} (${team})`;
   }
@@ -154,6 +172,11 @@ const ICON: Record<Kind, { name: React.ComponentProps<typeof Ionicons>['name']; 
   chance: { name: 'alert-circle-outline', color: colors.gold },
   save: { name: 'shield-outline', color: colors.info },
   attack: { name: 'flash-outline', color: colors.textMuted },
+  corner: { name: 'flag-outline', color: colors.info },
+  foul: { name: 'warning-outline', color: colors.textMuted },
+  throwin: { name: 'return-down-forward-outline', color: colors.textMuted },
+  offside: { name: 'remove-circle-outline', color: colors.gold },
+  goalkick: { name: 'arrow-undo-outline', color: colors.textMuted },
   other: { name: 'ellipse-outline', color: colors.textMuted },
 };
 
@@ -163,7 +186,7 @@ export function MatchTimeline({ events, homeId, homeName, awayName, homeGoals, a
       <EmptyState
         icon="newspaper-outline"
         title={live ? 'Henüz olay yok' : 'Anlatım yok'}
-        subtitle={live ? 'Gol, kart, direkten dönen şut ve tehlikeli ataklar burada görünür.' : 'Bu maç için olay verisi yayınlanmadı.'}
+        subtitle={live ? 'Gol, kart, korner, faul, taç ve tehlikeli anlar burada görünür.' : 'Bu maç için olay verisi yayınlanmadı.'}
       />
     );
   }

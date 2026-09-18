@@ -73,11 +73,15 @@ function currentSide(lu: TeamLineup, events: FixtureEvent[]) {
     if (e.type === 'subst' && e.player) {
       const idx = slots.findIndex((s) => s.player.id === e.player!.id);
       const inn = findPlayer(lu, e.assist?.id ?? null, e.assist?.name ?? null, slots[idx]?.player.position ?? 'MID');
-      if (idx >= 0) {
+      if (idx >= 0 && !onIds.has(inn.id)) {
         subs.push({ minute: e.time.elapsed, extra: e.time.extra, out: slots[idx].player, inn });
         onIds.delete(slots[idx].player.id);
         onIds.add(inn.id);
-        slots[idx] = { player: inn, cameOn: true, sentOff: false };
+        slots[idx] = {
+          player: { ...inn, grid: slots[idx].player.grid ?? inn.grid ?? null, position: slots[idx].player.position },
+          cameOn: true,
+          sentOff: false,
+        };
       }
     }
     if (e.type === 'Card' && e.player?.id && (d.includes('red') || d.includes('second'))) {
@@ -90,9 +94,57 @@ function currentSide(lu: TeamLineup, events: FixtureEvent[]) {
   return { slots, subs, bench };
 }
 
-function formationRows(formation: string, slots: Slot[]): Slot[][] {
+function parseGrid(g?: string | null): { row: number; col: number } | null {
+  if (!g) return null;
+  const m = /^(\d+)\s*:\s*(\d+)$/.exec(g.trim());
+  if (!m) return null;
+  return { row: Number(m[1]), col: Number(m[2]) };
+}
+
+function roleLabel(formation: string, grid?: string | null, pos?: LineupPlayer['position']): string {
+  const g = parseGrid(grid);
+  if (!g) {
+    return pos === 'GK' ? 'KL' : pos === 'DEF' ? 'DF' : pos === 'FWD' ? 'FV' : 'OS';
+  }
+  if (g.row <= 1) return 'KL';
   const parts = formation.split('-').map(Number).filter((n) => Number.isFinite(n) && n > 0);
-  // starters sırası: GK, DEF..., MID..., FWD... — değişiklik olsa da slot yeri aynı kalır
+  const line = g.row - 2;
+  const width = parts[line] ?? 0;
+  const last = line === parts.length - 1;
+  if (last) {
+    if (width <= 1) return 'ST';
+    if (g.col === 1) return 'SL';
+    if (g.col === width) return 'SG';
+    return width === 2 ? (g.col === 1 ? 'SL' : 'SG') : 'ST';
+  }
+  if (line === 0) {
+    if (g.col === 1) return 'LB';
+    if (g.col === width) return 'RB';
+    return 'STP';
+  }
+  if (g.col === 1 && width >= 3) return 'LOS';
+  if (g.col === width && width >= 3) return 'SOS';
+  return 'OS';
+}
+
+function formationRows(formation: string, slots: Slot[]): Slot[][] {
+  const withGrid = slots.filter((s) => parseGrid(s.player.grid));
+  if (withGrid.length >= 8) {
+    const rows = new Map<number, Slot[]>();
+    for (const s of slots) {
+      const g = parseGrid(s.player.grid);
+      const row = g?.row ?? 99;
+      const arr = rows.get(row) ?? [];
+      arr.push(s);
+      rows.set(row, arr);
+    }
+    return [...rows.entries()]
+      .sort((a, b) => b[0] - a[0])
+      .map(([, line]) =>
+        line.sort((a, b) => (parseGrid(a.player.grid)?.col ?? 0) - (parseGrid(b.player.grid)?.col ?? 0)),
+      );
+  }
+  const parts = formation.split('-').map(Number).filter((n) => Number.isFinite(n) && n > 0);
   const gk = slots.slice(0, 1);
   const rest = slots.slice(1);
   if (parts.length === 4) {
@@ -150,11 +202,13 @@ function PlayerChip({
   goals,
   assists,
   yellow,
+  role,
 }: {
   slot: Slot;
   goals: number;
   assists: number;
   yellow: boolean;
+  role: string;
 }) {
   return (
     <View style={[styles.chip, slot.sentOff && { opacity: 0.45 }]}>
@@ -183,6 +237,7 @@ function PlayerChip({
       <Text style={styles.chipName} numberOfLines={1}>
         {shortName(slot.player.name)}
       </Text>
+      <Text style={styles.chipRole}>{role}</Text>
       <View style={styles.markRow}>
         <Marks n={goals} kind="goal" />
         <Marks n={assists} kind="assist" />
@@ -219,10 +274,11 @@ function Pitch({
         <View style={styles.centerCircle} />
         {rows.map((row, i) => (
           <View key={i} style={styles.pitchRow}>
-            {row.map((slot) => (
+            {row.map((slot, j) => (
               <PlayerChip
-                key={slot.player.id}
+                key={`${i}-${j}-${slot.player.id}`}
                 slot={slot}
+                role={roleLabel(lu.formation, slot.player.grid, slot.player.position)}
                 goals={marks.goals.get(slot.player.id) ?? 0}
                 assists={marks.assists.get(slot.player.id) ?? 0}
                 yellow={marks.yellow.has(slot.player.id)}
@@ -381,6 +437,7 @@ const styles = StyleSheet.create({
   redCard: { width: 6, height: 8, borderRadius: 1, backgroundColor: '#fff' },
   yellowCard: { width: 6, height: 8, borderRadius: 1, backgroundColor: colors.bg },
   chipName: { color: colors.text, fontSize: 10, fontWeight: '700', textAlign: 'center', width: '100%' },
+  chipRole: { color: 'rgba(255,255,255,0.55)', fontSize: 9, fontWeight: '700', textAlign: 'center' },
   markRow: { flexDirection: 'row', gap: 2, minHeight: 12, alignItems: 'center', justifyContent: 'center' },
   marks: { flexDirection: 'row', gap: 1, alignItems: 'center' },
   subList: { gap: 6, paddingHorizontal: 4 },

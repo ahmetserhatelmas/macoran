@@ -22,6 +22,7 @@ export interface PlayerRow {
   aggression: number;
   injured_until: string | null;
   suspended_matches: number;
+  api_id?: number | null;
 }
 
 export interface PlayerRef {
@@ -30,6 +31,8 @@ export interface PlayerRef {
   number: number | null;
   position: Position;
   photo: string | null;
+  /** API-Football saha hücresi, "sıra:sütun" (1:1 kaleci; yüksek sıra hücum) */
+  grid?: string | null;
 }
 
 export interface Lineup {
@@ -60,7 +63,7 @@ export function timeFromAbs(half: 1 | 2, abs: number): SimTime {
   return { half, minute: Math.min(abs, cap), extra: abs > cap ? abs - cap : null };
 }
 
-export type EventType = "Goal" | "Card" | "subst" | "Var" | "Injury" | "Chance";
+export type EventType = "Goal" | "Card" | "subst" | "Var" | "Injury" | "Chance" | "Play";
 
 export interface SimEvent {
   time: SimTime;
@@ -72,6 +75,26 @@ export interface SimEvent {
   comments: string | null;
   /** Admin pad ile yazıldı; motorun gizli kalan golleri listede görünmez. */
   admin?: boolean;
+}
+
+export function isPenaltyAward(e: Pick<SimEvent, "type" | "detail">): boolean {
+  return e.type === "Var" && /penalty (awarded|confirmed)/i.test(e.detail);
+}
+
+export function isPenaltyKick(e: Pick<SimEvent, "type" | "detail">): boolean {
+  return e.type === "Goal" && (e.detail === "Penalty" || e.detail === "Missed Penalty");
+}
+
+/** Penaltı verildi ama atış henüz açıklanmadı — oranlar kapalı kalmalı. */
+export function pendingPenaltyKick(events: SimEvent[], revealed: number): boolean {
+  let lastAward = -1;
+  let lastKick = -1;
+  for (let i = 0; i < revealed; i++) {
+    if (isPenaltyAward(events[i])) lastAward = i;
+    if (isPenaltyKick(events[i])) lastKick = i;
+  }
+  if (lastAward < 0 || lastKick > lastAward) return false;
+  return events.slice(revealed).some(isPenaltyKick);
 }
 
 /** Gol, penaltı (verildi/çekildi), kırmızı, VAR: oranlar hemen kapanmalı. */
@@ -122,14 +145,25 @@ export interface Script {
   scenario: Scenario | null;
 }
 
+export interface RecentLineup {
+  formation: string;
+  starterApiIds: number[];
+  starterPos: Position[];
+  starterGrids: (string | null)[];
+  benchApiIds: number[];
+  matchdayApiIds: number[];
+}
+
 export interface TeamCtx {
   id: number;
   name: string;
   players: PlayerRow[];
+  recent?: RecentLineup | null;
 }
 
-const ref = (p: PlayerRow | PlayerRef): PlayerRef => ({
+const ref = (p: PlayerRow | PlayerRef, grid?: string | null): PlayerRef => ({
   id: p.id, name: p.name, number: p.number, position: p.position, photo: p.photo ?? null,
+  grid: grid ?? ("grid" in p ? p.grid : null) ?? null,
 });
 
 const FORMATIONS: { name: string; def: number; mid: number; fwd: number; w: number }[] = [
@@ -139,15 +173,99 @@ const FORMATIONS: { name: string; def: number; mid: number; fwd: number; w: numb
   { name: "3-5-2", def: 3, mid: 5, fwd: 2, w: 0.15 },
 ];
 
-/** Uygun (sakat/cezalı olmayan) oyunculardan ilk 11 + yedekler */
-export function pickLineup(players: PlayerRow[], kickoff: Date, rng: Rng): Lineup {
-  const available = players.filter((p) =>
+const SIMILAR_POS: Record<Position, Position[]> = {
+  GK: ["GK"],
+  DEF: ["DEF", "MID"],
+  MID: ["MID", "DEF", "FWD"],
+  FWD: ["FWD", "MID"],
+};
+
+function availablePool(players: PlayerRow[], kickoff: Date): PlayerRow[] {
+  const real = players.filter((p) => p.api_id != null);
+  const source = real.length >= 11 ? real : players;
+  const available = source.filter((p) =>
     p.suspended_matches <= 0 && (!p.injured_until || new Date(p.injured_until) <= kickoff)
   );
-  const pool = available.length >= 11 ? available : players;
-  const score = (p: PlayerRow) => p.talent + rng.range(-0.08, 0.08);
-  const byPos = (pos: Position) => pool.filter((p) => p.position === pos).sort((a, b) => score(b) - score(a));
+  return available.length >= 11 ? available : source.length >= 11 ? source : players;
+}
 
+function fillBench(pool: PlayerRow[], taken: Set<number>, preferIds: Set<number>): PlayerRow[] {
+  const rest = pool.filter((p) => !taken.has(p.id)).sort((a, b) => {
+    const pa = preferIds.has(a.api_id ?? -1) ? 1 : 0;
+    const pb = preferIds.has(b.api_id ?? -1) ? 1 : 0;
+    if (pb !== pa) return pb - pa;
+    return b.talent - a.talent;
+  });
+  const bench: PlayerRow[] = [];
+  const gk = rest.find((p) => p.position === "GK");
+  if (gk) bench.push(gk);
+  for (const p of rest) {
+    if (bench.length >= 7) break;
+    if (!bench.includes(p)) bench.push(p);
+  }
+  return bench;
+}
+
+function pickReplacement(
+  pos: Position,
+  pool: PlayerRow[],
+  taken: Set<number>,
+  matchday: Set<number>,
+): PlayerRow | null {
+  const rank = (p: PlayerRow) => (matchday.has(p.api_id ?? -1) ? 2 : 0) + p.talent;
+  for (const ppos of SIMILAR_POS[pos]) {
+    const cand = pool.filter((p) => p.position === ppos && !taken.has(p.id)).sort((a, b) => rank(b) - rank(a));
+    if (cand[0]) return cand[0];
+  }
+  return pool.filter((p) => !taken.has(p.id)).sort((a, b) => rank(b) - rank(a))[0] ?? null;
+}
+
+function pickFromRecent(pool: PlayerRow[], recent: RecentLineup): Lineup {
+  const byApi = new Map(pool.filter((p) => p.api_id != null).map((p) => [p.api_id!, p]));
+  const matchday = new Set(recent.matchdayApiIds);
+  const taken = new Set<number>();
+  const slots: PlayerRef[] = [];
+  for (let i = 0; i < recent.starterApiIds.length; i++) {
+    const pos = recent.starterPos[i] ?? "MID";
+    const grid = recent.starterGrids[i] ?? null;
+    const hit = byApi.get(recent.starterApiIds[i]);
+    const pick = hit && !taken.has(hit.id) ? hit : pickReplacement(pos, pool, taken, matchday);
+    if (!pick || taken.has(pick.id)) continue;
+    taken.add(pick.id);
+    slots.push(ref(pick, grid));
+  }
+  while (slots.length < 11) {
+    const need: Position = slots.some((p) => p.position === "GK") ? "MID" : "GK";
+    const extra = pickReplacement(need, pool, taken, matchday);
+    if (!extra) break;
+    taken.add(extra.id);
+    slots.push(ref(extra, null));
+  }
+  slots.sort((a, b) => {
+    const ga = parseGrid(a.grid), gb = parseGrid(b.grid);
+    if (ga && gb) return ga.row - gb.row || ga.col - gb.col;
+    if (ga) return -1;
+    if (gb) return 1;
+    const order: Position[] = ["GK", "DEF", "MID", "FWD"];
+    return order.indexOf(a.position) - order.indexOf(b.position);
+  });
+  const prefer = new Set([...recent.benchApiIds, ...recent.matchdayApiIds]);
+  return { formation: recent.formation, starters: slots.slice(0, 11), bench: fillBench(pool, taken, prefer).map((p) => ref(p)) };
+}
+
+export function parseGrid(g?: string | null): { row: number; col: number } | null {
+  if (!g) return null;
+  const m = /^(\d+)\s*:\s*(\d+)$/.exec(g.trim());
+  if (!m) return null;
+  return { row: Number(m[1]), col: Number(m[2]) };
+}
+
+/** Son gerçek 11; cezalı/sakat yerine aynı veya yakın mevki. */
+export function pickLineup(players: PlayerRow[], kickoff: Date, rng: Rng, recent?: RecentLineup | null): Lineup {
+  const pool = availablePool(players, kickoff);
+  if (recent && recent.starterApiIds.length >= 11) return pickFromRecent(pool, recent);
+
+  const byPos = (pos: Position) => pool.filter((p) => p.position === pos).sort((a, b) => b.talent - a.talent);
   const f = rng.weighted(FORMATIONS, (x) => x.w)!;
   const taken = new Set<number>();
   const take = (pos: Position, n: number) => {
@@ -160,9 +278,7 @@ export function pickLineup(players: PlayerRow[], kickoff: Date, rng: Rng): Lineu
     }
     return out;
   };
-
   const starters: PlayerRow[] = [...take("GK", 1), ...take("DEF", f.def), ...take("MID", f.mid), ...take("FWD", f.fwd)];
-  // Eksik mevki varsa en yetenekli kalanlarla doldur
   if (starters.length < 11) {
     const rest = pool.filter((p) => !taken.has(p.id)).sort((a, b) => b.talent - a.talent);
     for (const p of rest) {
@@ -171,15 +287,23 @@ export function pickLineup(players: PlayerRow[], kickoff: Date, rng: Rng): Lineu
       starters.push(p);
     }
   }
-  const restAll = pool.filter((p) => !taken.has(p.id)).sort((a, b) => b.talent - a.talent);
-  const bench: PlayerRow[] = [];
-  const gk = restAll.find((p) => p.position === "GK");
-  if (gk) bench.push(gk);
-  for (const p of restAll) {
-    if (bench.length >= 7) break;
-    if (!bench.includes(p)) bench.push(p);
-  }
-  return { formation: f.name, starters: starters.map(ref), bench: bench.map(ref) };
+  const grids = gridsForFormation(f.name, starters.length);
+  return {
+    formation: f.name,
+    starters: starters.map((p, i) => ref(p, grids[i] ?? null)),
+    bench: fillBench(pool, taken, new Set()).map((p) => ref(p)),
+  };
+}
+
+function gridsForFormation(formation: string, n: number): string[] {
+  const parts = formation.split("-").map(Number).filter((x) => Number.isFinite(x) && x > 0);
+  const out = ["1:1"];
+  parts.forEach((count, i) => {
+    const row = i + 2;
+    for (let c = 1; c <= count; c++) out.push(`${row}:${c}`);
+  });
+  while (out.length < n) out.push(`${parts.length + 2}:${out.length}`);
+  return out.slice(0, n);
 }
 
 // ---------------------------------------------------------------------
@@ -272,7 +396,7 @@ export function generateScript(inp: GenerateInput): Script {
   const END2 = 90 + 4;                // 2. yarı olay penceresi
 
   const mk = (side: Side, ctx: TeamCtx): TeamState => {
-    const lineup = pickLineup(ctx.players, inp.kickoff, rng);
+    const lineup = pickLineup(ctx.players, inp.kickoff, rng, ctx.recent);
     const ts: TeamState = {
       side, ctx, lineup, byId: new Map(ctx.players.map((p) => [p.id, p])),
       onFrom: new Map(), offAt: new Map(), bench: lineup.bench.slice(), subsUsed: 0,
@@ -683,6 +807,15 @@ function pickAttacker(rng: Rng, pitch: PlayerRef[]): PlayerRef | null {
   return rng.weighted(pitch, (p) => POS_GOAL[p.position] * (0.35 + (p.position === "FWD" ? 0.4 : 0.15))) ?? pitch[0];
 }
 
+function pickByPos(rng: Rng, pitch: PlayerRef[], weight: Record<Position, number>): PlayerRef | null {
+  if (!pitch.length) return null;
+  return rng.weighted(pitch, (p) => weight[p.position]) ?? pitch[0];
+}
+
+const POS_FOUL: Record<Position, number> = { GK: 0.08, DEF: 1.0, MID: 0.85, FWD: 0.4 };
+const POS_THROW: Record<Position, number> = { GK: 0.02, DEF: 1.0, MID: 0.55, FWD: 0.15 };
+const POS_CORNER: Record<Position, number> = { GK: 0.01, DEF: 0.25, MID: 0.9, FWD: 1.0 };
+
 function deriveChanceEvents(script: Script): SimEvent[] {
   const seed = hashSeed(
     "chance",
@@ -758,6 +891,111 @@ function deriveChanceEvents(script: Script): SimEvent[] {
     push(pick.side, pick.k, "Woodwork", `Direkten döndü! ${p?.name ?? "Oyuncu"} şutu direğe çarpıyor`, p);
   }
   return out.sort((a, b) => tkey(a.time) - tkey(b.time));
+}
+
+/** Korner / faul / taç / ofsayt / kaleci vuruşu — istatistik dakikalarından anlatım. Oran/skor listesine karışmaz. */
+export function derivePlayEvents(script: Script): SimEvent[] {
+  if (script.events.some((e) => e.type === "Play")) return [];
+  const seed = hashSeed(
+    "play",
+    script.facts.h1, script.facts.a1, script.facts.h2, script.facts.a2,
+    script.stats.home.fouls.length, script.stats.away.fouls.length,
+    script.stats.home.corners[0] ?? 0, script.stats.away.corners[0] ?? 0,
+    script.stoppage.h1, script.stoppage.h2,
+  );
+  const rng = new Rng(seed);
+  const FIN1 = 45 + script.stoppage.h1;
+  const FIN2 = 90 + script.stoppage.h2;
+  const cardAt = new Set(
+    script.events.filter((e) => e.type === "Card").map((e) => `${e.side}:${tkey(e.time)}`),
+  );
+  const used = new Set<string>();
+  const out: SimEvent[] = [];
+
+  const randKey = (): number => {
+    const half: 1 | 2 = rng.chance(0.47) ? 1 : 2;
+    const abs = half === 1 ? rng.int(1, FIN1) : rng.int(46, FIN2);
+    return tkey(timeFromAbs(half, abs));
+  };
+
+  const push = (side: Side, k: number, detail: string, comments: string, player: PlayerRef | null, assist: PlayerRef | null = null) => {
+    const id = `${side}:${detail}:${k}`;
+    if (used.has(id)) return;
+    used.add(id);
+    out.push({ time: timeFromKey(k), side, type: "Play", detail, player, assist, comments });
+  };
+
+  for (const side of ["home", "away"] as Side[]) {
+    const opp = side === "home" ? "away" : "home";
+    for (const k of script.stats[side].corners ?? []) {
+      const p = pickByPos(rng, pitchFromScript(script, side, k), POS_CORNER);
+      push(side, k, "Corner", rng.pick([
+        `${p?.name ?? "Oyuncu"} korner kazandı`,
+        `Korner: ${p?.name ?? "Oyuncu"} köşe vuruşunu kullanıyor, savunma uzaklaştırıyor`,
+        `${p?.name ?? "Oyuncu"} kanattan korner kazandırıyor`,
+        `Köşe vuruşu içeriye, ${p?.name ?? "savunma"} kafa ile uzaklaştırıyor`,
+      ]), p);
+    }
+    for (const k of script.stats[side].fouls ?? []) {
+      if (cardAt.has(`${side}:${k}`)) continue;
+      const p = pickByPos(rng, pitchFromScript(script, side, k), POS_FOUL);
+      const victim = pickAttacker(rng, pitchFromScript(script, opp, k));
+      const freeKick = rng.chance(0.22);
+      push(side, k, "Foul", freeKick
+        ? `Serbest vuruş: ${p?.name ?? "Oyuncu"} faul yapıyor${victim ? `, ${victim.name} yerde kalıyor` : ""}`
+        : rng.pick([
+          `${p?.name ?? "Oyuncu"} faul yapıyor${victim ? ` — ${victim.name} yere seriliyor` : ""}`,
+          `Orta sahada faul: ${p?.name ?? "Oyuncu"} rakibini kesiyor`,
+          `${p?.name ?? "Oyuncu"} geç müdahale ediyor, hakem düdüğü çalıyor`,
+        ]), p, victim);
+    }
+    for (const k of script.stats[side].offsides ?? []) {
+      const p = pickAttacker(rng, pitchFromScript(script, side, k));
+      push(side, k, "Offside", rng.pick([
+        `Ofsayt: ${p?.name ?? "Oyuncu"} erken harekete geçiyor`,
+        `${p?.name ?? "Oyuncu"} ofsayt pozisyonunda yakalanıyor`,
+        `Asist çizgisi kalkıyor, ${p?.name ?? "Oyuncu"} ofsayt`,
+      ]), p);
+    }
+  }
+
+  const nThrow = rng.int(16, 24);
+  for (let i = 0; i < nThrow; i++) {
+    let k = randKey();
+    for (let t = 0; t < 8 && (used.has(`home:Throw-in:${k}`) || used.has(`away:Throw-in:${k}`)); t++) k = randKey();
+    const side: Side = rng.chance((script.stats.home.possession || 50) / 100) ? "home" : "away";
+    const p = pickByPos(rng, pitchFromScript(script, side, k), POS_THROW);
+    push(side, k, "Throw-in", rng.pick([
+      `Taç: ${p?.name ?? "Oyuncu"} oyunu tekrar başlatıyor`,
+      `${p?.name ?? "Oyuncu"} tacı uzun kullanıyor`,
+      `Kenar çizgisinden taç, ${p?.name ?? "Oyuncu"} içeriye atıyor`,
+    ]), p);
+  }
+
+  const nGk = rng.int(6, 10);
+  for (let i = 0; i < nGk; i++) {
+    const k = randKey();
+    const side: Side = rng.chance(0.5) ? "home" : "away";
+    const gk = pitchFromScript(script, side, k).find((p) => p.position === "GK")
+      ?? pickByPos(rng, pitchFromScript(script, side, k), { GK: 1, DEF: 0.2, MID: 0.05, FWD: 0.01 });
+    push(side, k, "Goal Kick", rng.pick([
+      `Kaleci vuruşu: ${gk?.name ?? "Kaleci"} oyunu uzun başlatıyor`,
+      `${gk?.name ?? "Kaleci"} tabandan oyunu kuruyor`,
+    ]), gk);
+  }
+
+  return out.sort((a, b) => tkey(a.time) - tkey(b.time));
+}
+
+const PLAY_RANK = (e: SimEvent) => e.type === "Play" ? 0 : e.type === "Chance" ? 1 : 2;
+
+/** Anlatım listesi: skor olayları + korner/faul/taç. Tetik kesilirse oyun olayları o dakikada durur. */
+export function timelineEvents(script: Script, k: number, maxEvents = Infinity): SimEvent[] {
+  const snap = snapshot(script, k, maxEvents);
+  const truncated = maxEvents !== Infinity && snap.events.length >= maxEvents;
+  const cap = truncated && snap.events.length ? tkey(snap.events[snap.events.length - 1].time) : k;
+  const plays = derivePlayEvents(script).filter((e) => tkey(e.time) <= cap);
+  return [...snap.events, ...plays].sort((a, b) => tkey(a.time) - tkey(b.time) || PLAY_RANK(a) - PLAY_RANK(b));
 }
 
 /** k: geçerli zaman anahtarı (dahil). HT için k = 99 (1. yarının tamamı). maxEvents: henüz açıklanmayan tetik olaylarını tutmak için. */

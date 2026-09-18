@@ -52,7 +52,7 @@ export async function loadPlayers(db: SupabaseClient, teamIds: number[]): Promis
   for (const p of data ?? []) {
     const row: PlayerRow = {
       id: Number(p.id), team_id: p.team_id, name: p.name, number: p.number, position: p.position,
-      photo: p.photo ?? null,
+      photo: p.photo ?? null, api_id: p.api_id ?? null,
       talent: Number(p.talent), finishing: Number(p.finishing), creativity: Number(p.creativity), aggression: Number(p.aggression),
       injured_until: p.injured_until, suspended_matches: p.suspended_matches,
     };

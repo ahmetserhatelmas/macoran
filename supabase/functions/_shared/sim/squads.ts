@@ -1,11 +1,13 @@
 // Kadrolar ve oyuncu yetenekleri.
-//  - API-Football /players/squads ile gerçek kadro (isim, forma no, mevki, foto)
-//  - API'de kadro yoksa sentetik kadro
+//  - API-Football güncel kadro (/players/squads) + ayrılanlar (/transfers)
+//  - API'de kadro yoksa sentetik kadro (yalnızca API anahtarı yokken)
 //  - Yetenekler takım gücüne göre, tohumlu rastgele dağıtılır
 
-import type { ApiFootball } from "../api.ts";
+import type { ApiFootball, ApiFixture } from "../api.ts";
+import { upsertChunked } from "../db.ts";
 import { hashSeed, Rng } from "./rng.ts";
-import type { Position } from "./script.ts";
+import type { Position, RecentLineup } from "./script.ts";
+import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
 export interface ApiSquadPlayer {
   id: number;
@@ -16,6 +18,101 @@ export interface ApiSquadPlayer {
   photo: string | null;
 }
 interface ApiSquad { team: { id: number; name: string }; players: ApiSquadPlayer[] }
+
+interface ApiTransferRow {
+  player: { id: number };
+  transfers: {
+    date: string | null;
+    teams: { in: { id: number } | null; out: { id: number } | null };
+  }[];
+}
+
+/** Son transferi bu takımdan çıkış olan oyuncular (ayrıldı / başka kulübe gitti). */
+async function departedPlayerIds(api: ApiFootball, teamId: number): Promise<Set<number>> {
+  const res = await api.get<ApiTransferRow>("/transfers", { team: teamId });
+  const left = new Set<number>();
+  const today = new Date().toISOString().slice(0, 10);
+  for (const row of res.response ?? []) {
+    const moves = (row.transfers ?? [])
+      .filter((t) => t.date && t.date <= today)
+      .sort((a, b) => (b.date ?? "").localeCompare(a.date ?? ""));
+    const last = moves[0];
+    if (!last) continue;
+    const inId = last.teams.in?.id ?? null;
+    const outId = last.teams.out?.id ?? null;
+    if (outId === teamId && inId !== teamId) left.add(row.player.id);
+  }
+  return left;
+}
+
+export async function fetchSquad(api: ApiFootball, teamId: number): Promise<ApiSquadPlayer[] | null> {
+  const res = await api.get<ApiSquad>("/players/squads", { team: teamId });
+  const squad = res.response[0];
+  if (!squad || !squad.players?.length) return null;
+  let players = squad.players;
+  try {
+    const left = await departedPlayerIds(api, teamId);
+    if (left.size) {
+      const kept = players.filter((p) => !left.has(p.id));
+      if (kept.length >= 11) players = kept;
+    }
+  } catch (e) {
+    console.warn(`transfers ${teamId}:`, e);
+  }
+  return players;
+}
+
+function lineupPos(pos: string | null | undefined): Position {
+  const p = (pos ?? "").toUpperCase();
+  if (p === "G" || p.startsWith("GK")) return "GK";
+  if (p === "D" || p.startsWith("DEF")) return "DEF";
+  if (p === "F" || p.startsWith("ATT") || p === "FW") return "FWD";
+  return "MID";
+}
+
+function formationFromCounts(pos: Position[]): string {
+  const def = pos.filter((p) => p === "DEF").length;
+  const mid = pos.filter((p) => p === "MID").length;
+  const fwd = pos.filter((p) => p === "FWD").length;
+  if (def && mid && fwd) return `${def}-${mid}-${fwd}`;
+  return "4-3-3";
+}
+
+interface ApiLineupSide {
+  team: { id: number };
+  formation: string | null;
+  startXI: { player: { id: number; pos: string | null; grid: string | null } }[];
+  substitutes: { player: { id: number; pos: string | null; grid: string | null } }[];
+}
+
+/** Takımın gerçek hayatta en son oynadığı resmi 11 + maç günü yedekleri. */
+export async function fetchRecentLineup(api: ApiFootball, teamId: number): Promise<RecentLineup | null> {
+  const fx = await api.get<ApiFixture>("/fixtures", { team: teamId, last: 2, status: "FT" });
+  for (const row of fx.response ?? []) {
+    const id = row.fixture?.id;
+    if (!id) continue;
+    const res = await api.get<ApiLineupSide>("/fixtures/lineups", { fixture: id });
+    const side = (res.response ?? []).find((l) => l.team?.id === teamId);
+    const xi = side?.startXI ?? [];
+    if (xi.length < 11) continue;
+    const starterPos = xi.map((x) => lineupPos(x.player.pos));
+    const starterApiIds = xi.map((x) => x.player.id);
+    const starterGrids = xi.map((x) => x.player.grid ?? null);
+    const benchApiIds = (side?.substitutes ?? []).map((x) => x.player.id).filter((n) => Number.isFinite(n));
+    const formation = (side?.formation && /^\d+(-\d+)+$/.test(side.formation))
+      ? side.formation
+      : formationFromCounts(starterPos);
+    return {
+      formation,
+      starterApiIds,
+      starterPos,
+      starterGrids,
+      benchApiIds,
+      matchdayApiIds: [...starterApiIds, ...benchApiIds],
+    };
+  }
+  return null;
+}
 
 export function mapPosition(p: string): Position {
   switch (p) {
@@ -72,13 +169,6 @@ export function rollAttributes(rng: Rng, position: Position, teamOverall: number
   finishing = r3(finishing * (0.7 + talent * 0.6));
   creativity = r3(creativity * (0.7 + talent * 0.6));
   return { talent, finishing, creativity, aggression };
-}
-
-export async function fetchSquad(api: ApiFootball, teamId: number): Promise<ApiSquadPlayer[] | null> {
-  const res = await api.get<ApiSquad>("/players/squads", { team: teamId });
-  const squad = res.response[0];
-  if (!squad || !squad.players?.length) return null;
-  return squad.players;
 }
 
 export function buildPlayersFromApi(teamId: number, teamOverall: number, players: ApiSquadPlayer[]): PlayerInsert[] {
@@ -196,4 +286,57 @@ export function ratingsFromStandings(leagueId: number, rows: ApiStandingRowLite[
     out.push({ team_id: r.team.id, league_id: leagueId, attack: c(attack), midfield: c(midfield), defense: c(defense), goalkeeper: c(goalkeeper), source: "standings" });
   }
   return out;
+}
+
+/** Güncel kadroyu yaz: ayrılanları sil, başka takımda duran api_id'yi bu kulübe taşı. */
+export async function saveTeamPlayers(db: SupabaseClient, teamId: number, rows: PlayerInsert[], replace: boolean) {
+  const unique = dedupePlayersByApiId(rows);
+  const apiIds = unique.map((r) => r.api_id).filter((id): id is number => id != null);
+  const keep = new Set(apiIds);
+
+  if (replace) {
+    if (apiIds.length) {
+      for (let i = 0; i < apiIds.length; i += 200) {
+        const chunk = apiIds.slice(i, i + 200);
+        const { error } = await db.from("players").update({ team_id: teamId }).in("api_id", chunk).neq("team_id", teamId);
+        if (error) throw new Error(`players move: ${error.message}`);
+      }
+    }
+    const { data: cur, error: curErr } = await db.from("players").select("id, api_id").eq("team_id", teamId);
+    if (curErr) throw curErr;
+    const drop = (cur ?? []).filter((r) => r.api_id == null || !keep.has(r.api_id as number)).map((r) => r.id as number);
+    for (let i = 0; i < drop.length; i += 200) {
+      const { error } = await db.from("players").delete().in("id", drop.slice(i, i + 200));
+      if (error) throw new Error(`players prune: ${error.message}`);
+    }
+    const have = new Set((cur ?? []).map((r) => r.api_id as number | null).filter((id): id is number => id != null && keep.has(id)));
+    const fresh = unique.filter((r) => r.api_id == null || !have.has(r.api_id));
+    if (fresh.length) await upsertChunked(db, "players", fresh as unknown as Record<string, unknown>[]);
+    return;
+  }
+
+  const taken = new Set<number>();
+  if (apiIds.length) {
+    for (let i = 0; i < apiIds.length; i += 200) {
+      const { data } = await db.from("players").select("api_id, team_id").in("api_id", apiIds.slice(i, i + 200));
+      for (const r of data ?? []) {
+        if (r.api_id == null) continue;
+        taken.add(r.api_id as number);
+      }
+    }
+  }
+  const fresh = unique.filter((r) => r.api_id == null || !taken.has(r.api_id));
+  if (fresh.length) await upsertChunked(db, "players", fresh as unknown as Record<string, unknown>[]);
+}
+
+export async function refreshTeamSquad(
+  db: SupabaseClient,
+  api: ApiFootball,
+  teamId: number,
+  teamOverall: number,
+): Promise<boolean> {
+  const squad = await fetchSquad(api, teamId);
+  if (!squad || squad.length < 11) return false;
+  await saveTeamPlayers(db, teamId, buildPlayersFromApi(teamId, teamOverall, squad), true);
+  return true;
 }
