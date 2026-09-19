@@ -2,6 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { NotificationBell } from '@/components/NotificationBell';
 import { Badge, Button, Card, Header, Muted, Screen, SectionTitle } from '@/components/ui';
 import { dateTime, money } from '@/lib/format';
 import { useMyTransactions } from '@/lib/queries';
@@ -9,12 +10,13 @@ import { colors, radius, spacing } from '@/lib/theme';
 import { useAuth } from '@/store/auth';
 import type { Transaction } from '@/types/db';
 
-const TX_META: Record<Transaction['type'], { label: string; icon: 'add-circle' | 'remove-circle' | 'ticket' | 'trophy' | 'refresh-circle'; color: string }> = {
+const TX_META: Record<Transaction['type'], { label: string; icon: 'add-circle' | 'remove-circle' | 'ticket' | 'trophy' | 'refresh-circle' | 'cash-outline'; color: string }> = {
   grant: { label: 'Bakiye yüklendi', icon: 'add-circle', color: colors.success },
   deduct: { label: 'Bakiye düşüldü', icon: 'remove-circle', color: colors.danger },
   bet: { label: 'Kupon oynandı', icon: 'ticket', color: colors.textMuted },
   win: { label: 'Kupon kazandı', icon: 'trophy', color: colors.gold },
   refund: { label: 'İade', icon: 'refresh-circle', color: colors.info },
+  cashout: { label: 'Kupon bozduruldu', icon: 'cash-outline', color: colors.gold },
 };
 
 export default function ProfileScreen() {
@@ -31,7 +33,7 @@ export default function ProfileScreen() {
 
   return (
     <Screen>
-      <Header title="Profil" />
+      <Header title="Profil" right={<NotificationBell />} />
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
         <View style={{ paddingHorizontal: spacing.lg, gap: spacing.md }}>
           <Card style={styles.balanceCard}>

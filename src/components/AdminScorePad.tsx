@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { interpolateClock, useLiveNow } from '@/lib/liveClock';
 import { simAdmin } from '@/lib/queries';
 import { colors, radius, spacing } from '@/lib/theme';
 import type { FixtureWithRelations, SimScenario } from '@/types/db';
@@ -139,6 +140,9 @@ function nsScenarioSig(sc: SimScenario | null | undefined) {
 export function AdminScorePad({ fixture: f }: { fixture: FixtureWithRelations }) {
   const qc = useQueryClient();
   const live = f.status_short === '1H' || f.status_short === 'HT' || f.status_short === '2H';
+  const clockNow = useLiveNow(live);
+  const clock = interpolateClock(f.status_short, f.elapsed, f.elapsed_extra, f.updated_at, clockNow);
+  const nowMin = clock.elapsed ?? 1;
   const curH = f.home_goals ?? 0;
   const curA = f.away_goals ?? 0;
   const sc = f.sim_matches?.scenario;
@@ -147,7 +151,6 @@ export function AdminScorePad({ fixture: f }: { fixture: FixtureWithRelations })
   const [htH, setHtH] = useState(sc?.ht_home ?? 0);
   const [htA, setHtA] = useState(sc?.ht_away ?? 0);
   const [nsSlots, setNsSlots] = useState<NsSlot[]>(() => (sc ? slotsFromScenario(sc) : []));
-  const nowMin = f.elapsed ?? 1;
   const [liveSlots, setLiveSlots] = useState<LiveSlot[]>([]);
   const [liveMode, setLiveMode] = useState<'inject' | 'plan'>('inject');
   const [busy, setBusy] = useState(false);
@@ -534,7 +537,7 @@ export function AdminScorePad({ fixture: f }: { fixture: FixtureWithRelations })
           <Text style={styles.applyTxt}>{busy ? 'Yazılıyor…' : 'Skoru kilitle'}</Text>
         </Pressable>
       ) : live ? (
-        <Text style={styles.minNow}>şu an {f.elapsed ?? 0}'</Text>
+        <Text style={styles.minNow}>şu an {clock.extra > 0 ? `${nowMin}+${clock.extra}'` : `${nowMin}'`}</Text>
       ) : nsSlots.length ? (
         <View style={styles.goals}>
           <Text style={styles.minLabel}>Goller</Text>

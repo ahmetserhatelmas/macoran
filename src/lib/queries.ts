@@ -5,7 +5,7 @@ import { dayjs } from '@/lib/format';
 import { LIVE_STATUSES } from '@/lib/markets';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/store/auth';
-import type { Bet, FixtureWithRelations, League, Profile, Standings, Team, Transaction } from '@/types/db';
+import type { AppNotification, Bet, FixtureWithRelations, League, Profile, Standings, Team, Transaction } from '@/types/db';
 
 const FIXTURE_SELECT = `*, home:teams!home_team_id(*), away:teams!away_team_id(*), league:leagues(*), odds(*)`;
 
@@ -251,6 +251,8 @@ export type AdminScoreFixture = {
   round: string | null;
   status_short: string;
   elapsed: number | null;
+  elapsed_extra?: number | null;
+  updated_at?: string | null;
   home_goals: number | null;
   away_goals: number | null;
   league_id: number;
@@ -263,7 +265,7 @@ export type AdminScoreFixture = {
   } | null;
 };
 
-const ADMIN_SCORE_SELECT = `id, date, round, status_short, elapsed, home_goals, away_goals, league_id, home:teams!home_team_id(id, name, logo), away:teams!away_team_id(id, name, logo), league:leagues(id, name), sim_matches(scenario, facts)`;
+const ADMIN_SCORE_SELECT = `id, date, round, status_short, elapsed, elapsed_extra, updated_at, home_goals, away_goals, league_id, home:teams!home_team_id(id, name, logo), away:teams!away_team_id(id, name, logo), league:leagues(id, name), sim_matches(scenario, facts)`;
 
 /** Admin: canlı + yaklaşan simülasyon maçları (skor müdahalesi). */
 export function useAdminLiveFixtures() {
@@ -343,7 +345,7 @@ export function useStandings(leagueId: number | null) {
 
 export type LeagueFixture = Pick<
   FixtureWithRelations,
-  'id' | 'date' | 'round' | 'status_short' | 'elapsed' | 'home_goals' | 'away_goals' | 'home' | 'away'
+  'id' | 'date' | 'round' | 'status_short' | 'elapsed' | 'elapsed_extra' | 'home_goals' | 'away_goals' | 'home' | 'away'
 >;
 
 /** Ligin sezon fikstürü (tarih/saat, skor). */
@@ -354,7 +356,7 @@ export function useLeagueFixtures(leagueId: number | null) {
       const { data, error } = await supabase
         .from('fixtures')
         .select(
-          'id, date, round, status_short, elapsed, home_goals, away_goals, home:teams!home_team_id(id, name, logo), away:teams!away_team_id(id, name, logo)',
+          'id, date, round, status_short, elapsed, elapsed_extra, home_goals, away_goals, home:teams!home_team_id(id, name, logo), away:teams!away_team_id(id, name, logo)',
         )
         .eq('league_id', leagueId!)
         .eq('archived', false)
@@ -428,6 +430,25 @@ export function useMyTransactions() {
       return (data as Transaction[]).map((t) => ({ ...t, amount: Number(t.amount) }));
     },
     enabled: !!uid,
+  });
+}
+
+export function useNotifications() {
+  const uid = useAuth((s) => s.session?.user.id);
+  return useQuery({
+    queryKey: ['notifications', uid],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('notifications')
+        .select('*')
+        .eq('user_id', uid!)
+        .order('created_at', { ascending: false })
+        .limit(80);
+      if (error) throw error;
+      return (data ?? []) as AppNotification[];
+    },
+    enabled: !!uid,
+    refetchInterval: 20_000,
   });
 }
 
@@ -544,6 +565,9 @@ export function useRealtimeSync() {
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'bet_selections' }, () => {
         schedule('bets');
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${uid}` }, () => {
+        schedule('notifications', true);
       })
       .subscribe();
 

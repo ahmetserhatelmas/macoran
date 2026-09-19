@@ -610,6 +610,7 @@ async function startTestMatches(db: SupabaseClient) {
       status_short: "1H",
       status_long: "First Half",
       elapsed: 1,
+      elapsed_extra: 0,
       home_team_id: home,
       away_team_id: away,
       home_goals: 0,
@@ -623,7 +624,7 @@ async function startTestMatches(db: SupabaseClient) {
     if (fxErr) throw fxErr;
 
     const seed = hashSeed("test-match", id, now.toISOString());
-    const exp = fixtureExpectation(ratings, home, away, 34);
+    const exp = fixtureExpectation(ratings, home, away, 34, TEST_LEAGUE_ID);
     const script = generateScript({
       seed,
       kickoff: now,
@@ -839,7 +840,7 @@ async function setLiveScore(db: SupabaseClient, body: Record<string, unknown>) {
   ]);
   const teams = new Map((teamRows ?? []).map((t) => [t.id as number, t as TeamInfo]));
   const league = leagues.get(f.league_id);
-  const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(league));
+  const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(league), f.league_id);
   const state: LiveState = {
     phase: clock.phase, t: clock.abs,
     h1: snap.h1, a1: snap.a1, h2: snap.h2, a2: snap.a2,
@@ -866,6 +867,8 @@ async function setLiveScore(db: SupabaseClient, body: Record<string, unknown>) {
       home_goals: home, away_goals: away,
       ht_home: pastFirstHalf ? snap.h1 : null,
       ht_away: pastFirstHalf ? snap.a1 : null,
+      elapsed: clock.elapsed,
+      elapsed_extra: clock.extra,
       live_odds_at: scoredNow ? null : now.toISOString(),
       updated_at: now.toISOString(),
     }).eq("id", fixtureId),

@@ -86,10 +86,11 @@ export function fixtureExpectation(
   homeId: number,
   awayId: number,
   rounds: number,
+  leagueId?: number,
 ): Expectation {
   const h = effectiveStrength(ratings.get(homeId) ?? DEFAULT_RATING(homeId), rounds);
   const a = effectiveStrength(ratings.get(awayId) ?? DEFAULT_RATING(awayId), rounds);
-  return expectation(h, a);
+  return expectation(h, a, leagueId);
 }
 
 /** Oran satırlarını fikstür bazında tek çağrıda değiştir (upsert + listede olmayanları sil) */

@@ -14,11 +14,12 @@ interface Props {
   awayGoals: number | null;
   status: string;
   elapsed: number | null;
+  extra?: number;
   live: boolean;
   finished: boolean;
 }
 
-type Kind = 'goal' | 'own' | 'pen' | 'penaward' | 'missed' | 'yellow' | 'red' | 'sub' | 'var' | 'injury' | 'woodwork' | 'chance' | 'save' | 'attack' | 'corner' | 'foul' | 'throwin' | 'offside' | 'goalkick' | 'other';
+type Kind = 'goal' | 'own' | 'pen' | 'penaward' | 'missed' | 'yellow' | 'red' | 'sub' | 'var' | 'injury' | 'woodwork' | 'chance' | 'save' | 'attack' | 'corner' | 'foul' | 'throwin' | 'offside' | 'goalkick' | 'stoppage' | 'other';
 
 function classify(e: FixtureEvent): Kind {
   const d = (e.detail ?? '').toLowerCase();
@@ -36,6 +37,7 @@ function classify(e: FixtureEvent): Kind {
   }
   if (e.type === 'Injury') return 'injury';
   if (e.type === 'Play') {
+    if (d.includes('stoppage') || d.includes('uzatma')) return 'stoppage';
     if (d.includes('corner')) return 'corner';
     if (d.includes('foul')) return 'foul';
     if (d.includes('throw')) return 'throwin';
@@ -101,6 +103,8 @@ export function narrate(e: FixtureEvent, kind: Kind, score?: string): string {
       return e.comments
         ? `${e.comments}.`
         : `Tehlikeli atak: ${p} (${team}) ceza sahasına iniyor, savunma son anda müdahale ediyor.`;
+    case 'stoppage':
+      return e.comments ? `${e.comments}.` : `Hakem uzatma gösterdi.`;
     case 'corner':
       return e.comments ? `${e.comments}.` : `Korner: ${p !== 'Oyuncu' ? p : team} köşe vuruşu kazandı.`;
     case 'foul':
@@ -172,6 +176,7 @@ const ICON: Record<Kind, { name: React.ComponentProps<typeof Ionicons>['name']; 
   chance: { name: 'alert-circle-outline', color: colors.gold },
   save: { name: 'shield-outline', color: colors.info },
   attack: { name: 'flash-outline', color: colors.textMuted },
+  stoppage: { name: 'time-outline', color: colors.gold },
   corner: { name: 'flag-outline', color: colors.info },
   foul: { name: 'warning-outline', color: colors.textMuted },
   throwin: { name: 'return-down-forward-outline', color: colors.textMuted },
@@ -180,7 +185,7 @@ const ICON: Record<Kind, { name: React.ComponentProps<typeof Ionicons>['name']; 
   other: { name: 'ellipse-outline', color: colors.textMuted },
 };
 
-export function MatchTimeline({ events, homeId, homeName, awayName, homeGoals, awayGoals, status, elapsed, live, finished }: Props) {
+export function MatchTimeline({ events, homeId, homeName, awayName, homeGoals, awayGoals, status, elapsed, extra = 0, live, finished }: Props) {
   if (!events.length) {
     return (
       <EmptyState
@@ -219,7 +224,7 @@ export function MatchTimeline({ events, homeId, homeName, awayName, homeGoals, a
       ) : live ? (
         <Card muted>
           <Text style={styles.system}>
-            {status === 'HT' ? 'Devre arası.' : `${elapsed ?? 0}. dakika oynanıyor.`} Skor {homeGoals ?? 0} - {awayGoals ?? 0}.
+            {status === 'HT' ? 'Devre arası.' : `${extra > 0 ? (status === '2H' ? `90+${extra}` : `45+${extra}`) : elapsed ?? 0}. dakika oynanıyor.`} Skor {homeGoals ?? 0} - {awayGoals ?? 0}.
           </Text>
         </Card>
       ) : null}

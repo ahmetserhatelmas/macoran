@@ -81,9 +81,47 @@ const K = 0.019;
 export const PEN_GOAL_FRAC = 0.06;
 export const MISSED_PEN_PER_TEAM = 0.04;
 
-export function expectation(home: Strength, away: Strength): Expectation {
-  const lambdaHome = clamp(HOME_BASE * Math.exp(K * (home.att - away.def)), 0.25, 4.5);
-  const lambdaAway = clamp(AWAY_BASE * Math.exp(K * (away.att - home.def)), 0.2, 4.0);
+/**
+ * Lig gol temposu. PL/Bundesliga gerçekte ~2.8–3.1; Arjantin/Brezilya daha kısır.
+ * Ortalama maç (λ≈2.40) bu çarpanla ölçeklenir.
+ */
+export function leagueGoalScale(leagueId?: number): number {
+  switch (leagueId) {
+    case 39: return 1.22;   // Premier League
+    case 40: return 1.14;   // Championship
+    case 78: return 1.26;   // Bundesliga
+    case 79: return 1.18;   // 2. Bundesliga
+    case 140: return 1.10;  // La Liga
+    case 141: return 1.12;  // LaLiga 2
+    case 135: return 1.10;  // Serie A
+    case 136: return 1.14;  // Serie B
+    case 61: return 1.14;   // Ligue 1
+    case 62: return 1.12;   // Ligue 2
+    case 88: return 1.24;   // Eredivisie
+    case 94: return 1.12;   // Primeira Liga
+    case 144: return 1.14;  // Belçika
+    case 179: return 1.12;  // İskoçya
+    case 203: return 1.16;  // Süper Lig
+    case 204: return 1.12;  // 1. Lig
+    case 2: return 1.18;    // UCL
+    case 3: return 1.12;    // UEL
+    case 848: return 1.10;  // UECL
+    case 218: return 1.16;  // Avusturya
+    case 197: return 1.12;  // Yunanistan
+    case 253: return 1.16;  // MLS
+    case 262: return 1.10;  // Liga MX
+    case 307: return 1.14;  // Suudi
+    case 128: return 0.92;  // Arjantin — kısır tempo
+    case 71: return 0.96;   // Brezilya
+    case 13: return 0.98;   // Libertadores
+    default: return 1.10;
+  }
+}
+
+export function expectation(home: Strength, away: Strength, leagueId?: number): Expectation {
+  const scale = leagueGoalScale(leagueId) * clamp(1 + ((home.att + away.att) / 2 - 68) * 0.003, 0.9, 1.12);
+  const lambdaHome = clamp(HOME_BASE * scale * Math.exp(K * (home.att - away.def)), 0.22, 4.8);
+  const lambdaAway = clamp(AWAY_BASE * scale * Math.exp(K * (away.att - home.def)), 0.18, 4.2);
   const total = lambdaHome + lambdaAway;
   const corners = clamp(9.6 + (total - 2.4) * 1.2 + (home.mid - away.mid) * 0.01, 7, 14);
   // En az bir penaltı (atılan ya da kaçan) olasılığı: Poisson(penaltı sayısı)

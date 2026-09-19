@@ -204,19 +204,19 @@ export function shortSelectionLabel(market: string, selection: string, line: num
   }
 }
 
-export function statusLabel(s: string, elapsed: number | null) {
+export function statusLabel(s: string, elapsed: number | null, extra = 0) {
   switch (s) {
     case 'NS': return 'Başlamadı';
     case 'TBD': return 'Belirsiz';
-    case '1H': return `${elapsed ?? ''}'`;
+    case '1H': return extra > 0 ? `45+${extra}'` : `${elapsed ?? ''}'`;
     case 'HT': return 'Devre';
-    case '2H': return `${elapsed ?? ''}'`;
+    case '2H': return extra > 0 ? `90+${extra}'` : `${elapsed ?? ''}'`;
     case 'ET': return `Uz. ${elapsed ?? ''}'`;
     case 'BT': return 'Uz. Ara';
     case 'P': return 'Penaltılar';
     case 'SUSP': return 'Durduruldu';
     case 'INT': return 'Ara verildi';
-    case 'LIVE': return 'Canlı';
+    case 'LIVE': return extra > 0 ? `${elapsed}+${extra}'` : 'Canlı';
     case 'FT': return 'Bitti';
     case 'AET': return 'Uz. Bitti';
     case 'PEN': return 'Pen. Bitti';
@@ -311,6 +311,11 @@ export const ERROR_MESSAGES: Record<string, string> = {
   INSUFFICIENT_BALANCE: 'Bakiyeniz yetersiz.',
   FIXTURE_NOT_FOUND: 'Maç bulunamadı.',
   DUPLICATE_FIXTURE: 'Aynı maçtan birden fazla seçim yapılamaz.',
+  CASHOUT_UNAVAILABLE: 'Şu an bozdurma teklifi yok.',
+  CASHOUT_LOW: 'Bozdurma tutarı çok düşük.',
+  SELECTION_LOST: 'Kuponun bir ayağı kaybetti, bozdurulamaz.',
+  BET_SETTLED: 'Bu kupon zaten sonuçlandı.',
+  BET_NOT_FOUND: 'Kupon bulunamadı.',
   FIXTURE_CLOSED: 'Bu maç bahse kapalı.',
   ODD_NOT_FOUND: 'Oran artık mevcut değil.',
   ODD_SUSPENDED: 'Bu oran şu an askıda.',

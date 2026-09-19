@@ -4,6 +4,7 @@ import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'rea
 
 import { BalancePill } from '@/components/BalancePill';
 import { BetCard } from '@/components/BetCard';
+import { NotificationBell } from '@/components/NotificationBell';
 import { Button, EmptyState, Header, Loading, Screen } from '@/components/ui';
 import { money } from '@/lib/format';
 import { useMyBets } from '@/lib/queries';
@@ -46,7 +47,15 @@ export default function BetsScreen() {
 
   return (
     <Screen>
-      <Header title="Kuponlarım" right={<BalancePill />} />
+      <Header
+        title="Kuponlarım"
+        right={
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <NotificationBell />
+            <BalancePill />
+          </View>
+        }
+      />
 
       {count > 0 ? (
         <View style={styles.openSlip}>

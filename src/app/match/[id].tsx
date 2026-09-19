@@ -11,6 +11,7 @@ import { OddButton } from '@/components/OddButton';
 import { TeamLogo } from '@/components/TeamLogo';
 import { Badge, EmptyState, Header, IconButton, Loading, Muted, Screen } from '@/components/ui';
 import { ago, dateTime, dayjs } from '@/lib/format';
+import { interpolateClock, useLiveNow } from '@/lib/liveClock';
 import { canBet, groupOdds, hideDecidedOdds, isFinished, isLive, liveBettingLocked, MARKET_CATEGORIES, selectionLabel, statusLabel } from '@/lib/markets';
 import { useFixture, useFixtureDetail } from '@/lib/queries';
 import { colors, radius, spacing } from '@/lib/theme';
@@ -45,6 +46,10 @@ export default function MatchScreen() {
   }, [groups, category]);
 
   const liveNow = f ? isLive(f.status_short) : false;
+  const clockNow = useLiveNow(liveNow);
+  const clock = f ? interpolateClock(f.status_short, f.elapsed, f.elapsed_extra, f.updated_at, clockNow) : { elapsed: f?.elapsed ?? null, extra: 0 };
+  const liveElapsed = clock.elapsed;
+  const liveExtra = clock.extra;
   const finishedNow = f ? isFinished(f.status_short) : false;
   const detail = useFixtureDetail(fixtureId, liveNow, liveNow || finishedNow);
   const [tabState, setTab] = useState<Tab | null>(null);
@@ -92,11 +97,11 @@ export default function MatchScreen() {
         <View style={styles.scoreCard}>
           <View style={styles.statusRow}>
             {live ? (
-              <Badge text={`CANLI · ${statusLabel(f.status_short, f.elapsed)}`} color="rgba(239,68,68,0.15)" textColor={colors.live} dot />
+              <Badge text={`CANLI · ${statusLabel(f.status_short, liveElapsed, liveExtra)}`} color="rgba(239,68,68,0.15)" textColor={colors.live} dot />
             ) : finished ? (
               <Badge text={statusLabel(f.status_short, f.elapsed)} color={colors.surface3} textColor={colors.textMuted} />
             ) : (
-              <Badge text={f.status_short === 'NS' ? dateTime(f.date) : statusLabel(f.status_short, f.elapsed)} color={colors.surface3} textColor={colors.text} />
+              <Badge text={f.status_short === 'NS' ? dateTime(f.date) : statusLabel(f.status_short, liveElapsed, liveExtra)} color={colors.surface3} textColor={colors.text} />
             )}
           </View>
 
@@ -177,7 +182,8 @@ export default function MatchScreen() {
                 homeGoals={f.home_goals}
                 awayGoals={f.away_goals}
                 status={f.status_short}
-                elapsed={f.elapsed}
+                elapsed={liveElapsed}
+                extra={liveExtra}
                 live={live}
                 finished={finished}
               />

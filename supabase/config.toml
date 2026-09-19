@@ -419,3 +419,6 @@ verify_jwt = false
 
 [functions.sim-admin]
 verify_jwt = false
+
+[functions.push-send]
+verify_jwt = false

@@ -266,7 +266,7 @@ function FixtureRow({ fixture: f, onPress }: { fixture: LeagueFixture; onPress: 
     <Pressable onPress={onPress} style={({ pressed }) => [styles.fxRow, live && styles.liveRow, pressed && { opacity: 0.85 }]}>
       <View style={styles.fxWhen}>
         {live ? (
-          <Badge text={statusLabel(f.status_short, f.elapsed)} color="rgba(239,68,68,0.15)" textColor={colors.live} />
+          <Badge text={statusLabel(f.status_short, f.elapsed, f.elapsed_extra ?? 0)} color="rgba(239,68,68,0.15)" textColor={colors.live} />
         ) : finished ? (
           <Text style={styles.fxTimeMuted}>MS</Text>
         ) : (

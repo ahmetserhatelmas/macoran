@@ -24,6 +24,7 @@ export default function BetslipScreen() {
   const balance = useAuth((s) => s.profile?.balance ?? 0);
   const refreshProfile = useAuth((s) => s.refreshProfile);
   const [loading, setLoading] = useState(false);
+  const [confirmLeft, setConfirmLeft] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const stakeNum = Number(stake) || 0;
@@ -72,6 +73,16 @@ export default function BetslipScreen() {
       line: s.line,
       odd: s.odd,
     }));
+    for (let left = 4; left > 0; left--) {
+      setConfirmLeft(left);
+      await new Promise((r) => setTimeout(r, 1000));
+      if (useBetslip.getState().selections.length !== payload.length) {
+        setLoading(false);
+        setConfirmLeft(0);
+        return setError('Kupon değişti, tekrar deneyin.');
+      }
+    }
+    setConfirmLeft(0);
     const { data, error: err } = await placeBet(payload, stakeNum);
     setLoading(false);
 
@@ -193,7 +204,13 @@ export default function BetslipScreen() {
             {error ? <Text style={styles.error}>{error}</Text> : null}
 
             <Button
-              title={hasChanges ? 'Oranları Onayla' : `Kuponu Oyna · ${money(stakeNum)}`}
+              title={
+                hasChanges
+                  ? 'Oranları Onayla'
+                  : confirmLeft > 0
+                    ? `Onaylanıyor · ${confirmLeft}`
+                    : `Kuponu Oyna · ${money(stakeNum)}`
+              }
               onPress={submit}
               loading={loading}
               disabled={stakeNum < 1 || insufficient}

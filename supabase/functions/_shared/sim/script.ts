@@ -86,15 +86,14 @@ export function isPenaltyKick(e: Pick<SimEvent, "type" | "detail">): boolean {
 }
 
 /** Penaltı verildi ama atış henüz açıklanmadı — oranlar kapalı kalmalı. */
-export function pendingPenaltyKick(events: SimEvent[], revealed: number): boolean {
-  let lastAward = -1;
-  let lastKick = -1;
-  for (let i = 0; i < revealed; i++) {
-    if (isPenaltyAward(events[i])) lastAward = i;
-    if (isPenaltyKick(events[i])) lastKick = i;
+export function pendingPenaltyKick(events: SimEvent[], revealed?: number): boolean {
+  const seen = revealed == null ? events : events.slice(0, Math.min(revealed, events.length));
+  let pending = false;
+  for (const e of seen) {
+    if (isPenaltyAward(e)) pending = true;
+    if (isPenaltyKick(e)) pending = false;
   }
-  if (lastAward < 0 || lastKick > lastAward) return false;
-  return events.slice(revealed).some(isPenaltyKick);
+  return pending;
 }
 
 /** Gol, penaltı (verildi/çekildi), kırmızı, VAR: oranlar hemen kapanmalı. */
@@ -990,12 +989,26 @@ export function derivePlayEvents(script: Script): SimEvent[] {
 const PLAY_RANK = (e: SimEvent) => e.type === "Play" ? 0 : e.type === "Chance" ? 1 : 2;
 
 /** Anlatım listesi: skor olayları + korner/faul/taç. Tetik kesilirse oyun olayları o dakikada durur. */
+function stoppageAnnouncements(script: Script): SimEvent[] {
+  const mk = (half: 1 | 2, minute: number, mins: number): SimEvent => ({
+    time: { half, minute, extra: null },
+    side: "home",
+    type: "Play",
+    detail: "Stoppage",
+    player: null,
+    assist: null,
+    comments: `Hakem ${mins} dakika uzatma gösterdi`,
+  });
+  return [mk(1, 45, script.stoppage.h1), mk(2, 90, script.stoppage.h2)];
+}
+
 export function timelineEvents(script: Script, k: number, maxEvents = Infinity): SimEvent[] {
   const snap = snapshot(script, k, maxEvents);
   const truncated = maxEvents !== Infinity && snap.events.length >= maxEvents;
   const cap = truncated && snap.events.length ? tkey(snap.events[snap.events.length - 1].time) : k;
   const plays = derivePlayEvents(script).filter((e) => tkey(e.time) <= cap);
-  return [...snap.events, ...plays].sort((a, b) => tkey(a.time) - tkey(b.time) || PLAY_RANK(a) - PLAY_RANK(b));
+  const stoppage = stoppageAnnouncements(script).filter((e) => tkey(e.time) <= cap);
+  return [...snap.events, ...plays, ...stoppage].sort((a, b) => tkey(a.time) - tkey(b.time) || PLAY_RANK(a) - PLAY_RANK(b));
 }
 
 /** k: geçerli zaman anahtarı (dahil). HT için k = 99 (1. yarının tamamı). maxEvents: henüz açıklanmayan tetik olaylarını tutmak için. */

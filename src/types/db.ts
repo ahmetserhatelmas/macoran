@@ -1,4 +1,4 @@
-export type BetStatus = 'pending' | 'won' | 'lost' | 'void';
+export type BetStatus = 'pending' | 'won' | 'lost' | 'void' | 'cashed';
 
 export interface Profile {
   id: string;
@@ -47,6 +47,8 @@ export interface Fixture {
   status_short: string;
   status_long: string | null;
   elapsed: number | null;
+  /** 45/90 uzatma dakikası (45+X / 90+X) */
+  elapsed_extra?: number | null;
   home_team_id: number;
   away_team_id: number;
   home_goals: number | null;
@@ -135,10 +137,22 @@ export interface Transaction {
   id: string;
   user_id: string;
   amount: number;
-  type: 'grant' | 'deduct' | 'bet' | 'win' | 'refund';
+  type: 'grant' | 'deduct' | 'bet' | 'win' | 'refund' | 'cashout';
   ref_id: string | null;
   note: string | null;
   created_by: string | null;
+  created_at: string;
+}
+
+export interface AppNotification {
+  id: string;
+  user_id: string;
+  type: string;
+  title: string;
+  body: string;
+  ref_id: string | null;
+  fixture_id: number | null;
+  read_at: string | null;
   created_at: string;
 }
 

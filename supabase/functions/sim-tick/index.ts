@@ -33,6 +33,16 @@ interface Ctx {
 }
 const CONCURRENCY = 6;
 
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timeout ${ms}ms`)), ms);
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); },
+    );
+  });
+}
+
 interface FixtureRow {
   id: number; league_id: number; season: number; date: string; status_short: string; elapsed: number | null;
   home_team_id: number; away_team_id: number; home_goals: number | null; away_goals: number | null;
@@ -52,7 +62,7 @@ Deno.serve(async (req) => {
   if (!(await authorize(req, db))) return json({ error: "unauthorized" }, 401);
 
   // Üst üste binen tick'ler (bir önceki hâlâ sürüyorsa) atlanır
-  if (!(await acquireTickLock(db, 90))) return json({ ok: true, skipped: "locked" });
+  if (!(await acquireTickLock(db, 120))) return json({ ok: true, skipped: "locked" });
 
   const started: string[] = [];
   const finished: string[] = [];
@@ -68,7 +78,7 @@ Deno.serve(async (req) => {
         .lte("date", now.toISOString()).order("date").limit(40),
       db.from("fixtures").select("*")
         .eq("is_sim", true).eq("archived", false).in("status_short", LIVE)
-        .order("date").limit(80),
+        .order("updated_at", { ascending: true }).limit(120),
     ]);
     if (dueRes.error) throw dueRes.error;
     if (liveRes.error) throw liveRes.error;
@@ -96,16 +106,35 @@ Deno.serve(async (req) => {
     // 1) Canlı maçlar — kickoff API'si takılsa bile dakika aksın
     // ------------------------------------------------------------------
     await mapLimit(liveRows, CONCURRENCY, async (f) => {
-      const sm = smMap.get(f.id);
-      if (!sm?.script || !sm.kickoff_at) {
-        const league = leagues.get(f.league_id) ?? {
-          id: f.league_id, name: "Test Maçları", season: f.season, sim_started_at: now.toISOString(), sim_config: { rounds: 34 }, odds_dirty_at: null,
-        };
-        await startMatch(ctx, f, league, { skipApi: Date.now() - t0 > 25_000 });
-        return;
+      try {
+        const sm = smMap.get(f.id);
+        if (!sm?.script || !sm.kickoff_at) {
+          const league = leagues.get(f.league_id) ?? {
+            id: f.league_id, name: "Test Maçları", season: f.season, sim_started_at: now.toISOString(), sim_config: { rounds: 34 }, odds_dirty_at: null,
+          };
+          // Canlı maç script'siz kaldıysa API beklenmesin — dakika aksın
+          await startMatch(ctx, f, league, { skipApi: true });
+          return;
+        }
+        const done = await advanceMatch(ctx, f, sm);
+        if (done) finished.push(String(f.id));
+      } catch (e) {
+        console.error(`live ${f.id}: ${errMsg(e)}`);
+        try {
+          const sm = smMap.get(f.id);
+          if (sm?.kickoff_at && sm.script) {
+            const clock = matchClock(new Date(sm.kickoff_at), now, sm.script.stoppage, settings);
+            if (clock.phase !== "FT") {
+              await db.from("fixtures").update({
+                elapsed: clock.elapsed,
+                elapsed_extra: clock.extra,
+                status_short: clock.status,
+                updated_at: now.toISOString(),
+              }).eq("id", f.id);
+            }
+          }
+        } catch { /* heartbeat */ }
       }
-      const done = await advanceMatch(ctx, f, sm);
-      if (done) finished.push(String(f.id));
     });
 
     // ------------------------------------------------------------------
@@ -113,14 +142,18 @@ Deno.serve(async (req) => {
     // ------------------------------------------------------------------
     const dueNow = Date.now() - t0 > 40_000 ? [] : due.slice(0, 6);
     await mapLimit(dueNow, 3, async (f) => {
-      await startMatch(ctx, f, leagues.get(f.league_id)!, { skipApi: Date.now() - t0 > 35_000 });
-      started.push(String(f.id));
+      try {
+        await startMatch(ctx, f, leagues.get(f.league_id)!, { skipApi: Date.now() - t0 > 20_000 });
+        started.push(String(f.id));
+      } catch (e) {
+        console.error(`start ${f.id}: ${errMsg(e)}`);
+      }
     });
 
     // ------------------------------------------------------------------
-    // 3) Maç öncesi oranlar
+    // 3) Maç öncesi oranlar (canlı iş uzadıysa sonraya bırak)
     // ------------------------------------------------------------------
-    priced = await refreshPrematch(db, leagues, settings, now);
+    priced = Date.now() - t0 > 45_000 ? 0 : await refreshPrematch(db, leagues, settings, now);
 
     const ms = Date.now() - t0;
     const msg = `canlı ${liveCount}${started.length ? `, başladı ${started.length}` : ""}${finished.length ? `, bitti ${finished.length}` : ""}${priced ? `, oran ${priced}` : ""} (${ms} ms)`;
@@ -148,15 +181,17 @@ async function startMatch(ctx: Ctx, f: FixtureRow, league: LeagueSim, opts?: { s
   let recentAway = null as Awaited<ReturnType<typeof fetchRecentLineup>>;
   if (key) {
     const api = new ApiFootball(key);
+    const timed = <T>(p: Promise<T>, ms = 3500) =>
+      Promise.race([p, new Promise<T | null>((resolve) => setTimeout(() => resolve(null), ms))]);
     const [rh, ra] = await Promise.all([
-      fetchRecentLineup(api, f.home_team_id).catch((e) => {
+      timed(fetchRecentLineup(api, f.home_team_id).catch((e) => {
         console.warn(`lineup ${f.home_team_id}: ${errMsg(e)}`);
         return null;
-      }),
-      fetchRecentLineup(api, f.away_team_id).catch((e) => {
+      })),
+      timed(fetchRecentLineup(api, f.away_team_id).catch((e) => {
         console.warn(`lineup ${f.away_team_id}: ${errMsg(e)}`);
         return null;
-      }),
+      })),
     ]);
     recentHome = rh;
     recentAway = ra;
@@ -169,7 +204,7 @@ async function startMatch(ctx: Ctx, f: FixtureRow, league: LeagueSim, opts?: { s
   const seed = smRow?.seed ? Number(smRow.seed) : hashSeed("match", f.id, f.date);
   const scenario = (smRow?.scenario ?? null) as Scenario | null;
 
-  const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(league));
+  const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(league), f.league_id);
   const script = generateScript({
     seed, kickoff: now,
     home: { id: f.home_team_id, name: teams.get(f.home_team_id)?.name ?? "Ev", players: players.get(f.home_team_id) ?? [], recent: recentHome },
@@ -195,7 +230,7 @@ async function startMatch(ctx: Ctx, f: FixtureRow, league: LeagueSim, opts?: { s
   await Promise.all([
     ...suspended.map((p) => db.from("players").update({ suspended_matches: Math.max(0, p.suspended_matches - 1) }).eq("id", p.id)),
     db.from("fixtures").update({
-      status_short: "1H", status_long: "First Half", elapsed: 1, home_goals: 0, away_goals: 0,
+      status_short: "1H", status_long: "First Half", elapsed: 1, elapsed_extra: 0, home_goals: 0, away_goals: 0,
       ht_home: null, ht_away: null, ft_home: null, ft_away: null, live_odds_at: now.toISOString(), updated_at: now.toISOString(),
     }).eq("id", f.id),
     writeDetails(db, f, script, teams, 0, false),
@@ -232,6 +267,7 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
     status_short: clock.status,
     status_long: clock.status === "1H" ? "First Half" : clock.status === "HT" ? "Halftime" : clock.status === "2H" ? "Second Half" : "Match Finished",
     elapsed: clock.elapsed,
+    elapsed_extra: clock.extra,
     home_goals: homeGoals, away_goals: awayGoals,
     ht_home: pastFirstHalf ? snap.h1 : null, ht_away: pastFirstHalf ? snap.a1 : null,
     updated_at: now.toISOString(),
@@ -255,47 +291,80 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
 
   let suspendedUntil = sm.suspended_until ? new Date(sm.suspended_until) : null;
   const hold = Math.max(5, Number(settings.goal_suspend_seconds) || 40);
-  const waitingKick = pendingPenaltyKick(script.events, revealCount);
-  if (trigger || (waitingKick && (!suspendedUntil || suspendedUntil <= now))) {
+  // Şans olayları script.events ile aynı indekste değil — kilit, açıklanan snap üzerinden
+  const waitingKick = pendingPenaltyKick(snap.events);
+  if (waitingKick) {
+    // Atış görünene kadar kilit yenilenir; 40 sn'lik gol askısı yetmez
+    suspendedUntil = new Date(now.getTime() + Math.max(hold, 90) * 1000);
+    await lockLiveBetting(db, f.id, suspendedUntil, now);
+  } else if (trigger) {
     suspendedUntil = new Date(now.getTime() + hold * 1000);
-    // Skor / anlatım yazılmadan bahsi kapat — eski oranla kupon penceresi olmasın
     await lockLiveBetting(db, f.id, suspendedUntil, now);
   }
   const isSuspended = waitingKick || (!!suspendedUntil && suspendedUntil > now);
-  const reprice = !trigger && !isSuspended && (clock.abs !== sm.odds_minute || suspendedUntil !== null);
+  const reprice = !trigger && !waitingKick && !isSuspended && (clock.abs !== sm.odds_minute || suspendedUntil !== null);
 
   const smUpdate: Record<string, unknown> = { revealed: revealCount, last_minute: clock.abs };
-  const writes: PromiseLike<unknown>[] = [];
+  if (isSuspended) smUpdate.suspended_until = suspendedUntil!.toISOString();
 
-  writes.push(writeDetails(db, f, script, teams, clock.key, false, revealCount));
-
-  if (isSuspended) {
-    smUpdate.suspended_until = suspendedUntil!.toISOString();
-  } else if (reprice) {
-    const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(league));
-    const state: LiveState = {
-      phase: clock.phase, t: clock.abs,
-      h1: snap.h1, a1: snap.a1, h2: snap.h2, a2: snap.a2,
-      corners: snap.corners, corners1h: snap.corners1h, penalty: snap.penalty,
-      redHome: snap.redHome, redAway: snap.redAway,
-    };
-    const rows = priceOdds(f.id, computeProbabilities(exp, state), settings.live_margin, true);
-    fixtureUpdate.live_odds_at = now.toISOString();
-    writes.push(replaceOdds(db, f.id, rows));
-    smUpdate.odds_minute = clock.abs;
-    smUpdate.suspended_until = null;
-  }
-  writes.push(
+  // Dakika/skor önce yazılsın; oran RPC'si patlasa bile saat donmasın
+  await Promise.all([
     db.from("fixtures").update(fixtureUpdate).eq("id", f.id),
     db.from("sim_matches").update(smUpdate).eq("fixture_id", f.id),
-  );
+  ]);
 
-  await Promise.all(writes);
+  try {
+    await withTimeout(writeDetails(db, f, script, teams, clock.key, false, revealCount), 8_000, "details");
+  } catch (e) {
+    console.error(`details ${f.id}: ${errMsg(e)}`);
+  }
+
+  const newly = full.events.slice(sm.revealed, revealCount);
+  for (const e of newly) {
+    if (e.type !== "Goal" || e.detail === "Missed Penalty") continue;
+    const home = teams.get(f.home_team_id)?.name ?? "Ev";
+    const away = teams.get(f.away_team_id)?.name ?? "Dep";
+    try {
+      await db.rpc("notify_fixture_followers", {
+        p_fixture_id: f.id,
+        p_type: "goal",
+        p_title: "Gol!",
+        p_body: `${home} ${homeGoals}-${awayGoals} ${away}${e.player?.name ? ` · ${e.player.name}` : ""}`,
+      });
+    } catch (err) {
+      console.error(`notify ${f.id}: ${errMsg(err)}`);
+    }
+  }
+
+  if (!isSuspended && reprice) {
+    try {
+      const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(league), f.league_id);
+      const state: LiveState = {
+        phase: clock.phase, t: clock.abs,
+        h1: snap.h1, a1: snap.a1, h2: snap.h2, a2: snap.a2,
+        corners: snap.corners, corners1h: snap.corners1h, penalty: snap.penalty,
+        redHome: snap.redHome, redAway: snap.redAway,
+      };
+      const rows = priceOdds(f.id, computeProbabilities(exp, state), settings.live_margin, true);
+      await withTimeout(replaceOdds(db, f.id, rows), 8_000, "odds");
+      await Promise.all([
+        db.from("fixtures").update({ live_odds_at: now.toISOString() }).eq("id", f.id),
+        db.from("sim_matches").update({ odds_minute: clock.abs, suspended_until: null }).eq("fixture_id", f.id),
+      ]);
+    } catch (e) {
+      console.error(`odds ${f.id}: ${errMsg(e)}`);
+    }
+  }
+
   if (clock.phase === "1H" || clock.phase === "HT" || clock.phase === "2H") {
-    await settleLiveDecided(db, f.id, {
-      h1: snap.h1, a1: snap.a1, h2: snap.h2, a2: snap.a2,
-      corners: snap.corners, corners1h: snap.corners1h, penalty: snap.penalty,
-    }, clock.phase, homeGoals, awayGoals);
+    try {
+      await settleLiveDecided(db, f.id, {
+        h1: snap.h1, a1: snap.a1, h2: snap.h2, a2: snap.a2,
+        corners: snap.corners, corners1h: snap.corners1h, penalty: snap.penalty,
+      }, clock.phase, homeGoals, awayGoals);
+    } catch (e) {
+      console.error(`settle ${f.id}: ${errMsg(e)}`);
+    }
   }
   return false;
 }
@@ -457,7 +526,7 @@ async function refreshPrematch(db: SupabaseClient, leagues: Map<number, LeagueSi
   const ratings = await loadRatings(db, teamIds);
   const allRows: OddRow[] = [];
   for (const f of todo) {
-    const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(leagues.get(f.league_id)));
+    const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(leagues.get(f.league_id)), f.league_id);
     allRows.push(...priceOdds(f.id, computeProbabilities(exp, PRE_STATE), settings.margin, false));
   }
   await upsertChunked(db, "odds", allRows as unknown as Record<string, unknown>[], "fixture_id,market,selection,line");

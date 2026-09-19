@@ -13,7 +13,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.macoran.app",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": ["remote-notification"]
       }
     },
     "android": {
@@ -40,10 +41,26 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 120
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/android-icon-monochrome.png",
+          "color": "#22C55E",
+          "defaultChannel": "macoran",
+          "enableBackgroundRemoteNotifications": true
+        }
       ]
     ],
     "experiments": {
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "a0e0ff4e-1795-4572-ad9f-572d0b809ede"
+      }
+    },
+    "owner": "4se"
   }
 }

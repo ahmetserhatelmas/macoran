@@ -4,9 +4,9 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Alert, KeyboardAvoidingView, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { STATUS_META } from '@/components/BetCard';
+import { BetCard } from '@/components/BetCard';
 import { Badge, Button, Card, Header, IconButton, Input, Loading, Muted, Screen, SectionTitle } from '@/components/ui';
-import { dateTime, money, odd as fmtOdd } from '@/lib/format';
+import { dateTime, money } from '@/lib/format';
 import { humanizeError } from '@/lib/markets';
 import { useAdminUser } from '@/lib/queries';
 import { supabase } from '@/lib/supabase';
@@ -125,26 +125,11 @@ export default function AdminUserScreen() {
           </View>
 
           <SectionTitle>Son Kuponlar ({bets.length})</SectionTitle>
-          <View style={{ paddingHorizontal: spacing.lg, gap: spacing.sm }}>
-            {bets.length === 0 ? <Muted>Kupon yok.</Muted> : null}
-            {bets.map((b) => {
-              const m = STATUS_META[b.status];
-              return (
-                <View key={b.id} style={styles.row}>
-                  <Ionicons name={m.icon} size={20} color={m.color} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.rowTitle}>
-                      {b.bet_selections?.length ?? 0} seçim · oran {fmtOdd(b.total_odd)}
-                    </Text>
-                    <Muted style={{ fontSize: 11 }}>{dateTime(b.created_at)}</Muted>
-                  </View>
-                  <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={styles.rowAmount}>{money(b.stake)}</Text>
-                    <Muted style={{ fontSize: 11, color: m.color }}>{m.label}{b.payout ? ` · ${money(b.payout)}` : ''}</Muted>
-                  </View>
-                </View>
-              );
-            })}
+          <View style={{ gap: spacing.sm }}>
+            {bets.length === 0 ? <Muted style={{ paddingHorizontal: spacing.lg }}>Kupon yok.</Muted> : null}
+            {bets.map((b) => (
+              <BetCard key={b.id} bet={b} />
+            ))}
           </View>
 
           <SectionTitle>Hesap Hareketleri ({transactions.length})</SectionTitle>

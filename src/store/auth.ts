@@ -2,6 +2,7 @@ import type { RealtimeChannel, Session } from '@supabase/supabase-js';
 import { create } from 'zustand';
 
 import { supabase } from '@/lib/supabase';
+import { unregisterPushToken } from '@/lib/push';
 import type { Profile } from '@/types/db';
 
 interface AuthState {
@@ -79,6 +80,7 @@ export const useAuth = create<AuthState>((set, get) => ({
   },
 
   signOut: async () => {
+    await unregisterPushToken();
     await supabase.auth.signOut();
   },
 }));

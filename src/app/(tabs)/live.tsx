@@ -5,6 +5,7 @@ import { BalancePill } from '@/components/BalancePill';
 import { BetslipBar } from '@/components/BetslipBar';
 import { FixtureCard } from '@/components/FixtureCard';
 import { LeagueChips } from '@/components/LeagueChips';
+import { NotificationBell } from '@/components/NotificationBell';
 import { EmptyState, Header, Loading, Screen } from '@/components/ui';
 import { useLeagues, useLiveFixtures } from '@/lib/queries';
 import { colors, spacing } from '@/lib/theme';
@@ -44,7 +45,12 @@ export default function LiveScreen() {
       <Header
         title="Canlı"
         subtitle={fixtures?.length ? `${fixtures.length} maç oynanıyor` : 'Şu an canlı maç yok'}
-        right={<BalancePill />}
+        right={
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <NotificationBell />
+            <BalancePill />
+          </View>
+        }
       />
       {liveLeagues.length > 1 ? <LeagueChips leagues={liveLeagues} selected={leagueId} onSelect={setLeagueId} /> : null}
 

@@ -7,6 +7,7 @@ import { DateBar } from '@/components/DateBar';
 import { FixtureCard } from '@/components/FixtureCard';
 import { LeagueChips } from '@/components/LeagueChips';
 import { LeaguePicker } from '@/components/LeaguePicker';
+import { NotificationBell } from '@/components/NotificationBell';
 import { EmptyState, Header, IconButton, Loading, Screen } from '@/components/ui';
 import { dayjs } from '@/lib/format';
 import { useFixturesByDate, useLeagues, useLiveFixtures } from '@/lib/queries';
@@ -62,6 +63,7 @@ export default function MatchesScreen() {
         subtitle={liveOnly ? `${fixtures?.length ?? 0} canlı maç` : `${fixtures?.length ?? 0} maç`}
         right={
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.xs }}>
+            <NotificationBell />
             <IconButton icon="search" onPress={() => setPickerOpen(true)} />
             <BalancePill />
           </View>

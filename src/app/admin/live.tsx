@@ -7,6 +7,7 @@ import { Alert, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } fr
 import { TeamLogo } from '@/components/TeamLogo';
 import { Badge, EmptyState, Header, IconButton, Loading, Muted, Screen } from '@/components/ui';
 import { dateTime } from '@/lib/format';
+import { interpolateClock, useLiveNow } from '@/lib/liveClock';
 import { statusLabel } from '@/lib/markets';
 import { simAdmin, useAdminLiveFixtures } from '@/lib/queries';
 import { colors, radius, spacing } from '@/lib/theme';
@@ -22,6 +23,8 @@ export default function AdminLiveScoreScreen() {
   const isAdmin = useAuth((s) => s.profile?.is_admin);
   const { data: fixtures = [], isLoading, refetch, isRefetching } = useAdminLiveFixtures();
   const [busy, setBusy] = useState<number | null>(null);
+  const hasLive = fixtures.some((x) => x.status_short !== 'NS');
+  const clockNow = useLiveNow(hasLive);
 
   useEffect(() => {
     if (isAdmin === false) router.replace('/(tabs)');
@@ -67,6 +70,8 @@ export default function AdminLiveScoreScreen() {
           }
           renderItem={({ item: f }) => {
             const live = f.status_short !== 'NS';
+            const clock = interpolateClock(f.status_short, f.elapsed, f.elapsed_extra, f.updated_at, clockNow);
+            const elapsed = clock.elapsed;
             const sc = f.sim_matches?.scenario;
             const facts = f.sim_matches?.facts;
             const curH = f.home_goals ?? 0;
@@ -88,7 +93,7 @@ export default function AdminLiveScoreScreen() {
                   </Muted>
                   {live ? (
                     <Badge
-                      text={statusLabel(f.status_short, f.elapsed)}
+                      text={statusLabel(f.status_short, elapsed, clock.extra)}
                       color="rgba(239,68,68,0.15)"
                       textColor={colors.live}
                       dot

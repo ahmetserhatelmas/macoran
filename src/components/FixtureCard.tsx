@@ -8,6 +8,7 @@ import { OddButton } from '@/components/OddButton';
 import { TeamLogo } from '@/components/TeamLogo';
 import { Badge } from '@/components/ui';
 import { time } from '@/lib/format';
+import { interpolateClock, useLiveNow } from '@/lib/liveClock';
 import { canBet, isFinished, isLive, liveBettingLocked, pick1X2, statusLabel } from '@/lib/markets';
 import { colors, radius, spacing } from '@/lib/theme';
 import { useBetslip } from '@/store/betslip';
@@ -24,6 +25,9 @@ export const FixtureCard = memo(function FixtureCard({ fixture: f, showLeague }:
   const toggle = useBetslip((s) => s.toggle);
   const selections = useBetslip((s) => s.selections);
   const live = isLive(f.status_short);
+  const now = useLiveNow(live);
+  const clock = interpolateClock(f.status_short, f.elapsed, f.elapsed_extra, f.updated_at, now);
+  const elapsed = clock.elapsed;
   const finished = isFinished(f.status_short);
   const odds = pick1X2(f.odds);
   const bettable = canBet(f.status_short);
@@ -61,13 +65,13 @@ export const FixtureCard = memo(function FixtureCard({ fixture: f, showLeague }:
       <View style={styles.top}>
         <View style={styles.statusCol}>
           {live ? (
-            <Badge text={statusLabel(f.status_short, f.elapsed)} color="rgba(239,68,68,0.15)" textColor={colors.live} dot />
+            <Badge text={statusLabel(f.status_short, elapsed, clock.extra)} color="rgba(239,68,68,0.15)" textColor={colors.live} dot />
           ) : finished ? (
             <Badge text={statusLabel(f.status_short, f.elapsed)} color={colors.surface3} textColor={colors.textMuted} />
           ) : f.status_short === 'NS' ? (
             <Text style={styles.time}>{time(f.date)}</Text>
           ) : (
-            <Badge text={statusLabel(f.status_short, f.elapsed)} color={colors.surface3} textColor={colors.warn} />
+            <Badge text={statusLabel(f.status_short, elapsed, clock.extra)} color={colors.surface3} textColor={colors.warn} />
           )}
           {showLeague ? (
             <Text style={styles.league} numberOfLines={1}>
