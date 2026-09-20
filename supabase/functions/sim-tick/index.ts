@@ -13,7 +13,7 @@ import { type Facts, settleSelection } from "../_shared/sim/markets.ts";
 import { computeProbabilities, type LiveState, type OddRow, PRE_STATE, priceOdds } from "../_shared/sim/model.ts";
 import { hashSeed } from "../_shared/sim/rng.ts";
 import { writeDetails } from "../_shared/sim/details.ts";
-import { generateScript, isOddsTriggerEvent, pendingPenaltyKick, type Scenario, type Script, type SimEvent, snapshot } from "../_shared/sim/script.ts";
+import { generateScript, isOddsTriggerEvent, isPenaltyAward, pendingPenaltyKick, type Scenario, type Script, type SimEvent, snapshot } from "../_shared/sim/script.ts";
 import { fetchRecentLineup } from "../_shared/sim/squads.ts";
 import { ApiFootball } from "../_shared/api.ts";
 import {
@@ -236,6 +236,9 @@ async function startMatch(ctx: Ctx, f: FixtureRow, league: LeagueSim, opts?: { s
     writeDetails(db, f, script, teams, 0, false),
     replaceOdds(db, f.id, rows),
   ]);
+  const home = teams.get(f.home_team_id)?.name ?? "Ev";
+  const away = teams.get(f.away_team_id)?.name ?? "Dep";
+  await notifyFollowers(db, f.id, "kickoff", "Maç başladı", `${home} - ${away}`);
 }
 
 // =====================================================================
@@ -286,6 +289,9 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
       db.from("sim_matches").update({ revealed: script.events.length, last_minute: clock.abs, suspended_until: null }).eq("fixture_id", f.id),
     ]);
     await finishMatch(db, f, script, league, now);
+    const home = teams.get(f.home_team_id)?.name ?? "Ev";
+    const away = teams.get(f.away_team_id)?.name ?? "Dep";
+    await notifyFollowers(db, f.id, "ft", "Maç bitti", `${home} ${homeGoals}-${awayGoals} ${away}`);
     return true;
   }
 
@@ -320,20 +326,11 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
   }
 
   const newly = full.events.slice(sm.revealed, revealCount);
+  const home = teams.get(f.home_team_id)?.name ?? "Ev";
+  const away = teams.get(f.away_team_id)?.name ?? "Dep";
   for (const e of newly) {
-    if (e.type !== "Goal" || e.detail === "Missed Penalty") continue;
-    const home = teams.get(f.home_team_id)?.name ?? "Ev";
-    const away = teams.get(f.away_team_id)?.name ?? "Dep";
-    try {
-      await db.rpc("notify_fixture_followers", {
-        p_fixture_id: f.id,
-        p_type: "goal",
-        p_title: "Gol!",
-        p_body: `${home} ${homeGoals}-${awayGoals} ${away}${e.player?.name ? ` · ${e.player.name}` : ""}`,
-      });
-    } catch (err) {
-      console.error(`notify ${f.id}: ${errMsg(err)}`);
-    }
+    const note = matchAlert(e, home, away, `${homeGoals}-${awayGoals}`);
+    if (note) await notifyFollowers(db, f.id, note.type, note.title, note.body);
   }
 
   if (!isSuspended && reprice) {
@@ -537,4 +534,51 @@ async function refreshPrematch(db: SupabaseClient, leagues: Map<number, LeagueSi
 async function loadTeams(db: SupabaseClient, ids: number[]): Promise<Map<number, TeamInfo>> {
   const { data } = await db.from("teams").select("id, name, logo").in("id", ids);
   return new Map((data ?? []).map((t) => [t.id as number, t as TeamInfo]));
+}
+
+function eventMinute(e: SimEvent): string {
+  return e.time.extra ? `${e.time.minute}+${e.time.extra}'` : `${e.time.minute}'`;
+}
+
+function matchAlert(e: SimEvent, home: string, away: string, score: string): { type: string; title: string; body: string } | null {
+  const min = eventMinute(e);
+  const team = e.side === "home" ? home : away;
+  const player = e.player?.name;
+  if (e.type === "Goal" && e.detail !== "Missed Penalty") {
+    const who = player ? `${player} (${team})` : team;
+    const kind = e.detail === "Own Goal" ? "Kendi kalesine" : e.detail === "Penalty" ? "Penaltıdan" : "";
+    return {
+      type: "goal",
+      title: "Gol!",
+      body: `${min} ${kind ? `${kind} ` : ""}${who} · ${score}`,
+    };
+  }
+  if (isPenaltyAward(e)) {
+    return {
+      type: "penalty",
+      title: "Penaltı!",
+      body: player ? `${min} ${team} kazandı · ${player}` : `${min} ${team} kazandı`,
+    };
+  }
+  if (e.type === "Card" && (e.detail === "Red Card" || e.detail === "Second Yellow card")) {
+    return {
+      type: "red",
+      title: "Kırmızı kart",
+      body: player ? `${min} ${team} · ${player}` : `${min} ${team}`,
+    };
+  }
+  return null;
+}
+
+async function notifyFollowers(db: SupabaseClient, fixtureId: number, type: string, title: string, body: string) {
+  try {
+    await db.rpc("notify_fixture_followers", {
+      p_fixture_id: fixtureId,
+      p_type: type,
+      p_title: title,
+      p_body: body,
+    });
+  } catch (err) {
+    console.error(`notify ${fixtureId}: ${errMsg(err)}`);
+  }
 }

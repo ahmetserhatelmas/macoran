@@ -411,6 +411,7 @@ export function generateScript(inp: GenerateInput): Script {
 
   const events: SimEvent[] = [];
   const usedKeys = new Set<number>();
+  const goalKeys: number[] = [];
   const injuries: Script["injuries"] = [];
   const suspensions: Script["suspensions"] = [];
 
@@ -425,6 +426,29 @@ export function generateScript(inp: GenerateInput): Script {
       if (!usedKeys.has(k)) { usedKeys.add(k); return abs; }
     }
     return hi;
+  };
+  const gapToGoals = (k: number) => {
+    let d = 99;
+    for (const g of goalKeys) d = Math.min(d, Math.abs(g - k));
+    return d;
+  };
+  /** Aynı dakika yasak; 1–2 dk ara serbest, biraz daha seyrek. Sert taban yok. */
+  const pickGoalAbs = (half: 1 | 2, lo: number, hi: number): number => {
+    const abs = rng.weighted(
+      Array.from({ length: hi - lo + 1 }, (_, i) => lo + i),
+      (m) => {
+        const k = tkey(timeFromAbs(half, m));
+        if (usedKeys.has(k)) return 0;
+        const gap = gapToGoals(k);
+        const near = gap <= 1 ? 0.55 : gap === 2 ? 0.75 : 1;
+        const late = 1 + 0.25 * ((m - lo) / Math.max(1, hi - lo));
+        return near * late;
+      },
+    )!;
+    const k = tkey(timeFromAbs(half, abs));
+    usedKeys.add(k);
+    goalKeys.push(k);
+    return abs;
   };
   const push = (e: SimEvent) => { events.push(e); };
   const pushPenalty = (side: Side, half: 1 | 2, kickAbs: number, taker: PlayerRef, scored: boolean, missComment?: string) => {
@@ -567,12 +591,14 @@ export function generateScript(inp: GenerateInput): Script {
     return abs;
   };
   const absForGoal = (half: 1 | 2, at: ScenarioGoal["at"]) => {
-    if (at === "stoppage") return half === 1 ? pickAbs(1, 46, 45 + 8) : pickAbs(2, 91, 90 + 8);
+    if (at === "stoppage") return pickGoalAbs(half, half === 1 ? 46 : 91, half === 1 ? 45 + 8 : 90 + 8);
     if (typeof at === "number" && at > 0) {
       const want = half === 1 ? Math.max(1, Math.min(45, at)) : Math.max(46, Math.min(90, at <= 45 ? 46 : at));
-      return placeAbs(half, want);
+      const abs = placeAbs(half, want);
+      goalKeys.push(tkey(timeFromAbs(half, abs)));
+      return abs;
     }
-    return half === 1 ? pickAbs(1, 1, END1, 0.6) : pickAbs(2, 46, END2, 0.7);
+    return half === 1 ? pickGoalAbs(1, 1, END1) : pickGoalAbs(2, 46, END2);
   };
   let penalty = false;
   const goalTimes: Record<Side, number[]> = { home: [], away: [] };

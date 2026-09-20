@@ -30,6 +30,10 @@ yarn-error.*
 .DS_Store
 *.pem
 
+# Firebase / FCM (servis hesabı gizli; google-services.json commitleinebilir)
+*-firebase-adminsdk-*.json
+service-account*.json
+
 # local env files
 .env*.local
 

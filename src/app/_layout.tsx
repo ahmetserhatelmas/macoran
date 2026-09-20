@@ -12,6 +12,7 @@ import { useRealtimeSync } from '@/lib/queries';
 import { registerPushToken, routeFromPush, type PushPayload } from '@/lib/push';
 import { colors } from '@/lib/theme';
 import { useAuth } from '@/store/auth';
+import { useFavorites } from '@/store/favorites';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -34,6 +35,7 @@ function PushBridge() {
   useEffect(() => {
     if (!session) return;
     registerPushToken();
+    void useFavorites.getState().syncWithServer();
   }, [session]);
 
   useEffect(() => {

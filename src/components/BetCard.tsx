@@ -39,7 +39,7 @@ export function BetCard({ bet }: { bet: Bet }) {
     if (!q?.available) return Alert.alert('Bozdurma', humanizeError(q?.reason) || 'Şu an teklif yok.');
     Alert.alert(
       'Kuponu bozdur',
-      `O anki duruma göre teklif ${money(Number(q.amount))}. Kabul edilsin mi?`,
+      `Şu anki duruma göre teklif ${money(Number(q.amount))}. Kabul edilsin mi?`,
       [
         { text: 'Vazgeç', style: 'cancel' },
         {

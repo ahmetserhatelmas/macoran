@@ -13,6 +13,10 @@ import type { AppNotification } from '@/types/db';
 
 const ICON: Record<string, { name: React.ComponentProps<typeof Ionicons>['name']; color: string }> = {
   goal: { name: 'football', color: colors.success },
+  kickoff: { name: 'play-circle', color: colors.info },
+  penalty: { name: 'alert-circle', color: colors.gold },
+  red: { name: 'square', color: colors.danger },
+  ft: { name: 'flag', color: colors.textMuted },
   bet_won: { name: 'trophy', color: colors.gold },
   bet_lost: { name: 'close-circle', color: colors.danger },
   bet_void: { name: 'refresh-circle', color: colors.info },
@@ -47,7 +51,7 @@ export default function NotificationsScreen() {
           data={data}
           keyExtractor={(n) => n.id}
           contentContainerStyle={{ padding: spacing.lg, paddingBottom: 40, gap: spacing.sm, flexGrow: 1 }}
-          ListEmptyComponent={<EmptyState icon="notifications-outline" title="Bildirim yok" subtitle="Kupon sonucu ve oynadığın maçlardaki goller burada görünür." />}
+          ListEmptyComponent={<EmptyState icon="notifications-outline" title="Bildirim yok" subtitle="Favori maçların ve kuponların olayları burada görünür." />}
           renderItem={({ item: n }) => {
             const ic = ICON[n.type] ?? { name: 'notifications-outline' as const, color: colors.textMuted };
             return (

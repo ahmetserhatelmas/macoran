@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "258896081939",
+    "project_id": "tostoyun-32766",
+    "storage_bucket": "tostoyun-32766.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:258896081939:android:02fcc4fac6381f6dfabbe6",
+        "android_client_info": {
+          "package_name": "com.macoran.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCr8fNfa4R-U1fmeIuyzZrA-EQ3WHoFfQM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
