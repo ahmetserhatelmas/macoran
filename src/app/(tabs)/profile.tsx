@@ -1,10 +1,12 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { NotificationBell } from '@/components/NotificationBell';
 import { Badge, Button, Card, Header, Muted, Screen, SectionTitle } from '@/components/ui';
 import { dateTime, money } from '@/lib/format';
+import { getNotificationPermissionGranted, openSystemNotificationSettings, registerPushToken } from '@/lib/push';
 import { useMyTransactions } from '@/lib/queries';
 import { colors, radius, spacing } from '@/lib/theme';
 import { useAuth } from '@/store/auth';
@@ -24,6 +26,26 @@ export default function ProfileScreen() {
   const profile = useAuth((s) => s.profile);
   const signOut = useAuth((s) => s.signOut);
   const { data: tx = [] } = useMyTransactions();
+  const [pushOn, setPushOn] = useState<boolean | null>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      void getNotificationPermissionGranted().then(setPushOn);
+    }, []),
+  );
+
+  const enablePush = async () => {
+    const ok = await registerPushToken();
+    setPushOn(ok);
+    if (ok) {
+      Alert.alert('Bildirimler açık', 'Maç ve kupon haberleri telefona gelecek.');
+      return;
+    }
+    Alert.alert('Bildirimler kapalı', 'Telefonda Macoran bildirim iznini açman gerekiyor.', [
+      { text: 'Vazgeç', style: 'cancel' },
+      { text: 'Ayarlar', onPress: () => void openSystemNotificationSettings() },
+    ]);
+  };
 
   const confirmSignOut = () =>
     Alert.alert('Çıkış', 'Hesabından çıkmak istiyor musun?', [
@@ -58,6 +80,13 @@ export default function ProfileScreen() {
             </View>
             <Muted style={{ fontSize: 12 }}>Bakiye admin tarafından yüklenir. Bu uygulamada gerçek para kullanılmaz.</Muted>
           </Card>
+
+          <Button
+            title={pushOn ? 'Bildirimler açık' : 'Bildirim iznini aç'}
+            icon={pushOn ? 'notifications' : 'notifications-outline'}
+            variant="secondary"
+            onPress={enablePush}
+          />
 
           {profile?.is_admin ? (
             <Button title="Admin Paneli" icon="shield-checkmark" variant="secondary" onPress={() => router.push('/admin')} />

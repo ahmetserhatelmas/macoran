@@ -2,7 +2,7 @@
   "expo": {
     "name": "Macoran",
     "slug": "macoran",
-    "version": "1.0.0",
+    "version": "1.0.4",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "macoran",
@@ -20,6 +20,12 @@
     "android": {
       "package": "com.macoran.app",
       "googleServicesFile": "./google-services.json",
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.VIBRATE",
+        "android.permission.WAKE_LOCK"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#0B0F14",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -49,7 +55,15 @@
           "icon": "./assets/images/android-icon-monochrome.png",
           "color": "#22C55E",
           "defaultChannel": "macoran",
-          "enableBackgroundRemoteNotifications": true
+          "enableBackgroundRemoteNotifications": true,
+          "sounds": [
+            "./assets/sounds/kickoff.wav",
+            "./assets/sounds/goal.wav",
+            "./assets/sounds/fulltime.wav",
+            "./assets/sounds/ht.wav",
+            "./assets/sounds/foul.wav",
+            "./assets/sounds/miss.wav"
+          ]
         }
       ]
     ],

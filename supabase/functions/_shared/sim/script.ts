@@ -372,7 +372,7 @@ function stoppageFor(events: SimEvent[], half: 1 | 2, rng: Rng): number {
   const vars = n((e) => e.type === "Var");
   const subs = n((e) => e.type === "subst");
 
-  const base = half === 1 ? 0.8 : 1.0;
+  const base = half === 1 ? 1.6 : 2.4;
   const raw = base
     + goals * 0.55 + missedPens * 0.6
     + injuries * 1.3
@@ -384,7 +384,8 @@ function stoppageFor(events: SimEvent[], half: 1 | 2, rng: Rng): number {
 
   // Uzatmada gerçekleşen olay varsa süre en az o kadar
   const lastExtra = Math.max(0, ...inHalf.map((e) => e.time.extra ?? 0));
-  return Math.max(1, Math.min(9, Math.max(Math.round(raw), lastExtra)));
+  const minSt = half === 1 ? 2 : 4;
+  return Math.max(minSt, Math.min(9, Math.max(Math.round(raw), lastExtra)));
 }
 
 export function generateScript(inp: GenerateInput): Script {

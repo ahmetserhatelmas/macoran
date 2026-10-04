@@ -4,7 +4,7 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { ApiFootball, fetchSeasonFixtures } from "../_shared/api.ts";
 import { adminClient, apiKey, authorize, errMsg, json, log, upsertChunked } from "../_shared/db.ts";
-import { planFromApiFixtures, planFromRhythm, teamsFromFixtures, isCupLeague, isUefaClubCup, filterCupMainFixtures, resolveTeamClashes, type CalendarResult } from "../_shared/sim/calendar.ts";
+import { planFromApiFixtures, planFromRhythm, teamsFromFixtures, isCupLeague, isUefaClubCup, filterCupMainFixtures, resolveTeamClashes, clampMatchesAfter, spreadAroundClock, parseSchedule, restampRemainingByRound, defaultScheduleForLeague, snapKickoff, type CalendarResult } from "../_shared/sim/calendar.ts";
 import { buildSchedule, computeStandings, TEST_LEAGUE_ID, type ScheduleConfig, type TeamInfo } from "../_shared/sim/league.ts";
 import { matchClock } from "../_shared/sim/clock.ts";
 import { computeProbabilities, type LiveState, PRE_STATE, priceOdds } from "../_shared/sim/model.ts";
@@ -41,8 +41,15 @@ Deno.serve(async (req) => {
         await db.from("sim_matches").update({ scenario: null }).eq("fixture_id", Number(body.fixture_id));
         return json({ ok: true });
       }
+      case "set_schedule": return json(await setSchedule(db, body));
+      case "set_fixture_date": return json(await setFixtureDate(db, body));
       case "update_settings": return json(await updateSettings(db, body));
-      case "import_squads": return json(await importSquads(db, body.league_id ? Number(body.league_id) : null, !!body.force));
+      case "import_squads": return json(await importSquads(
+        db,
+        body.league_id ? Number(body.league_id) : null,
+        !!body.force,
+        Number(body.squad_budget_ms ?? 120_000),
+      ));
       case "init_ratings": return json(await initRatings(db, Number(body.league_id), !!body.overwrite));
       case "set_rating": return json(await setRating(db, body));
       case "start_test_matches": return json(await startTestMatches(db));
@@ -68,7 +75,12 @@ async function status(db: SupabaseClient) {
   const out = (lRes.data ?? [])
     .filter((l: Record<string, unknown>) => Number(l.id) !== TEST_LEAGUE_ID)
     .map((l: Record<string, unknown>) => ({
-      ...l, teams: Number(l.teams), players: Number(l.players), upcoming: Number(l.upcoming), played: Number(l.played),
+      ...l,
+      teams: Number(l.teams),
+      players: Number(l.players),
+      upcoming: Number(l.upcoming),
+      played: Number(l.played),
+      schedule_default: defaultScheduleForLeague(Number(l.id)),
     }));
   const testRows = tRes.data ?? [];
   const testLive = testRows.filter((f) => ["1H", "HT", "2H", "NS"].includes(String(f.status_short))).length;
@@ -244,7 +256,8 @@ async function importSquads(db: SupabaseClient, leagueId: number | null, force: 
       imported++;
       continue;
     }
-    // API varken uydurma kadro yazma; sonraki import dener.
+    // API varken uydurma kadro yazma; sonraki import dener. Mevcut sentetikleri silme —
+    // takım 0 oyuncu kalmasın; import_squads tekrar çağrılınca doldurulur.
     if (api) { skipped++; continue; }
     await saveTeamPlayers(db, teamId, buildSyntheticPlayers(teamId, ov), true);
     synthetic++;
@@ -272,7 +285,7 @@ async function archiveLeagueFixtures(db: SupabaseClient, leagueId: number) {
   return ids.length;
 }
 
-/** Başlamamış ligleri aynı fikstür ayarıyla sırayla başlatır (Edge süre sınırı ~150 sn). */
+/** Başlamamış ligleri sırayla başlatır. Edge ~150 sn keser; her çağrıda az lig, istemci tekrarlar. */
 async function startLeagues(db: SupabaseClient, body: Record<string, unknown>) {
   const { data: all, error } = await db.from("leagues").select("id, name, sim_started_at").order("sort_order");
   if (error) throw error;
@@ -280,31 +293,38 @@ async function startLeagues(db: SupabaseClient, body: Record<string, unknown>) {
     ? new Set((body.league_ids as unknown[]).map(Number))
     : null;
   const pool = (all ?? []).filter((l) => l.id !== TEST_LEAGUE_ID && (!wanted || wanted.has(l.id)));
-  const todo = pool.filter((l) => !l.sim_started_at);
+  const todoAll = pool.filter((l) => !l.sim_started_at);
   const skipped = pool.filter((l) => l.sim_started_at).map((l) => ({ id: l.id, name: l.name, reason: "zaten aktif" }));
   const started: Record<string, unknown>[] = [];
   const failed: { id: number; name: string; error: string }[] = [];
 
   const t0 = Date.now();
-  const WALL = 135_000;
+  const WALL = 95_000;
+  const MAX_PER_CALL = 5;
+  const todo = todoAll.slice(0, MAX_PER_CALL);
+  const deferred = todoAll.slice(MAX_PER_CALL);
+
   for (let i = 0; i < todo.length; i++) {
     const l = todo[i];
-    if (Date.now() - t0 > WALL) {
+    const remain = WALL - (Date.now() - t0);
+    if (remain < 18_000) {
       for (const rest of todo.slice(i)) failed.push({ id: rest.id, name: rest.name, error: "süre doldu" });
       break;
     }
     try {
-      // Kadrolar sentetik/mevcut: 30 ligi bir çağrıda bitirmek için API'ye takılmıyoruz
-      const r = await startLeague(db, { ...body, league_id: l.id, squad_budget_ms: 0 });
+      const squadBudget = Math.max(4_000, Math.min(18_000, remain - 12_000));
+      const r = await startLeague(db, { ...body, league_id: l.id, squad_budget_ms: squadBudget });
       started.push({ id: l.id, name: l.name, teams: r.teams, fixtures: r.fixtures, rounds: r.rounds });
     } catch (e) {
       failed.push({ id: l.id, name: l.name, error: errMsg(e) });
     }
   }
+  for (const rest of deferred) failed.push({ id: rest.id, name: rest.name, error: "süre doldu" });
+  try { await rebalanceClock(db); } catch (e) { console.warn("clock", errMsg(e)); }
 
-  const msg = `hepsi: ${started.length} başladı, ${skipped.length} atlandı, ${failed.length} hata`;
-  await log(db, "sim-admin", failed.length === 0, msg, 0);
-  return { ok: failed.length === 0, started, skipped, failed };
+  const msg = `hepsi: ${started.length} başladı, ${skipped.length} atlandı, ${failed.length} bekliyor/hata`;
+  try { await log(db, "sim-admin", failed.filter((f) => f.error !== "süre doldu").length === 0, msg, 0); } catch { /* log şart değil */ }
+  return { ok: failed.filter((f) => f.error !== "süre doldu").length === 0, started, skipped, failed, remaining: failed.filter((f) => f.error === "süre doldu").length };
 }
 
 async function startLeague(db: SupabaseClient, body: Record<string, unknown>) {
@@ -322,6 +342,7 @@ async function startLeague(db: SupabaseClient, body: Record<string, unknown>) {
   const realCalendar = body.use_real_calendar !== false;
   const startAt = new Date(cfg.start_at);
   const seed = hashSeed("schedule", leagueId, cfg.start_at);
+  const schedule = parseSchedule(league.sim_schedule);
 
   // 1) Takımlar ve güçler (API dönemi puan durumu arşivlenmeden önce!)
   const { teams } = await leagueTeams(db, leagueId);
@@ -351,7 +372,7 @@ async function startLeague(db: SupabaseClient, body: Record<string, unknown>) {
         if (fromStage.length) {
           await upsertChunked(db, "teams", fromStage.map((t) => ({ id: t.id, name: t.name, logo: t.logo })), "id");
         }
-        calendar = planFromApiFixtures(stageFx, teams.map((t) => t.id), leagueId, startAt, seed);
+        calendar = planFromApiFixtures(stageFx, teams.map((t) => t.id), leagueId, startAt, seed, schedule);
       } catch (e) {
         console.warn(`fixtures ${leagueId}: ${errMsg(e)}`);
       }
@@ -376,11 +397,11 @@ async function startLeague(db: SupabaseClient, body: Record<string, unknown>) {
   // 4) Yeni fikstür: gerçek sezon (varsayılan) veya hızlı test takvimi
   if (!calendar) {
     if (cup) {
-      calendar = planFromRhythm(teams.map((t) => t.id), leagueId, { ...cfg, double_round: false }, seed);
+      calendar = planFromRhythm(teams.map((t) => t.id), leagueId, { ...cfg, double_round: false }, seed, schedule);
       calendar.matches = calendar.matches.filter((m) => m.round <= 8);
       calendar.estimated = calendar.matches.length;
     } else if (realCalendar || cfg.round_interval_hours >= 24) {
-      calendar = planFromRhythm(teams.map((t) => t.id), leagueId, cfg, seed);
+      calendar = planFromRhythm(teams.map((t) => t.id), leagueId, cfg, seed, schedule);
     } else {
       const raw = buildSchedule(teams.map((t) => t.id), cfg, seed);
       calendar = {
@@ -408,8 +429,9 @@ async function startLeague(db: SupabaseClient, body: Record<string, unknown>) {
   }
   if (busy.length) {
     calendar.matches = resolveTeamClashes(calendar.matches, busy, { uefa: isUefaClubCup(leagueId) });
-    calendar.estimated = calendar.matches.filter((m) => m.estimated).length;
   }
+  calendar.matches = clampMatchesAfter(calendar.matches, startAt);
+  calendar.estimated = calendar.matches.filter((m) => m.estimated).length;
 
   const { data: maxRow } = await db.from("fixtures").select("id").gte("id", SIM_ID_BASE).order("id", { ascending: false }).limit(1);
   let nextId = Math.max(SIM_ID_BASE, Number(maxRow?.[0]?.id ?? SIM_ID_BASE)) + 1;
@@ -449,6 +471,32 @@ async function startLeague(db: SupabaseClient, body: Record<string, unknown>) {
     ok: true, teams: teams.length, fixtures: rows.length, rounds, archived, squads,
     config: cfg, calendar: calendar.source, estimated: calendar.estimated,
   };
+}
+
+async function rebalanceClock(db: SupabaseClient) {
+  const from = new Date(Date.now() + 20 * 60_000).toISOString();
+  const { data, error } = await db.from("fixtures")
+    .select("id, date, league_id, home_team_id, away_team_id")
+    .eq("archived", false).eq("is_sim", true).eq("status_short", "NS")
+    .gte("date", from)
+    .order("date")
+    .limit(5000);
+  if (error) throw error;
+  const rows = (data ?? []).map((r) => ({
+    id: Number(r.id),
+    date: new Date(r.date as string),
+    league_id: Number(r.league_id),
+    home_team_id: Number(r.home_team_id),
+    away_team_id: Number(r.away_team_id),
+  }));
+  if (!rows.length) return 0;
+  spreadAroundClock(rows, new Date(from));
+  for (let i = 0; i < rows.length; i += 80) {
+    await Promise.all(rows.slice(i, i + 80).map((r) =>
+      db.from("fixtures").update({ date: r.date.toISOString() }).eq("id", r.id)
+    ));
+  }
+  return rows.length;
 }
 
 async function stopLeague(db: SupabaseClient, leagueId: number) {
@@ -908,6 +956,75 @@ async function setScenario(db: SupabaseClient, body: Record<string, unknown>) {
   const { error: upErr } = await db.from("sim_matches").upsert({ fixture_id: fixtureId, seed, scenario: sc }, { onConflict: "fixture_id" });
   if (upErr) throw upErr;
   return { ok: true, scenario: sc };
+}
+
+/** Admin TR yerel saati: YYYY-MM-DD HH:mm */
+function parseTrKickoff(raw: unknown): Date {
+  if (typeof raw !== "string") throw new Error("Tarih gerekli");
+  const s = raw.trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})$/);
+  if (m) {
+    const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]), h = Number(m[4]), min = Number(m[5]);
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || min > 59) throw new Error("Geçersiz tarih");
+    return new Date(Date.UTC(y, mo - 1, d, h, min) - 180 * 60_000);
+  }
+  const t = new Date(s);
+  if (Number.isNaN(t.getTime())) throw new Error("Tarih YYYY-AA-GG SS:DD olmalı");
+  return t;
+}
+
+async function setFixtureDate(db: SupabaseClient, body: Record<string, unknown>) {
+  const fixtureId = Number(body.fixture_id);
+  if (!fixtureId) throw new Error("fixture_id gerekli");
+  const date = snapKickoff(parseTrKickoff(body.date), new Date());
+  if (date.getTime() < Date.now() - 30_000) throw new Error("Tarih geçmiş olamaz");
+  const { data: f, error } = await db.from("fixtures")
+    .select("id, status_short, is_sim, archived, home_team_id, away_team_id")
+    .eq("id", fixtureId).single();
+  if (error) throw error;
+  if (!f.is_sim || f.archived) throw new Error("Sadece simülasyon maçları taşınabilir");
+  if (f.status_short !== "NS") throw new Error("Başlamış maçın tarihi değiştirilemez");
+  const { error: upErr } = await db.from("fixtures").update({
+    date: date.toISOString(),
+    updated_at: new Date().toISOString(),
+  }).eq("id", fixtureId);
+  if (upErr) throw upErr;
+  await log(db, "sim-admin", true, `maç tarihi ${fixtureId} → ${date.toISOString()}`, 0);
+  return { ok: true, date: date.toISOString() };
+}
+
+async function setSchedule(db: SupabaseClient, body: Record<string, unknown>) {
+  const leagueId = Number(body.league_id);
+  if (!leagueId) throw new Error("league_id gerekli");
+  const schedule = parseSchedule(body.schedule);
+  if (!schedule) throw new Error("En az bir gün ve geçerli saat aralığı seçin");
+  const { error } = await db.from("leagues").update({ sim_schedule: schedule }).eq("id", leagueId);
+  if (error) throw error;
+
+  const from = new Date(Date.now() + 15 * 60_000);
+  const { data: fx, error: fxErr } = await db.from("fixtures")
+    .select("id, date, round")
+    .eq("league_id", leagueId).eq("is_sim", true).eq("archived", false).eq("status_short", "NS")
+    .gte("date", from.toISOString())
+    .order("date");
+  if (fxErr) throw fxErr;
+  const rows = (fx ?? []).map((f) => ({
+    id: Number(f.id),
+    date: new Date(f.date as string),
+    round: String(f.round ?? ""),
+  }));
+  let moved = 0;
+  if (rows.length) {
+    const stamped = restampRemainingByRound(rows, schedule, from);
+    for (let i = 0; i < stamped.length; i += 80) {
+      await Promise.all(stamped.slice(i, i + 80).map((r) =>
+        db.from("fixtures").update({ date: r.date.toISOString() }).eq("id", r.id)
+      ));
+    }
+    moved = stamped.length;
+  }
+  await log(db, "sim-admin", true, `takvim ${leagueId}: ${schedule.days.join(",")} ${schedule.hour_from}-${schedule.hour_to} (${moved} maç)`, 0);
+  return { ok: true, schedule, moved };
 }
 
 async function updateSettings(db: SupabaseClient, body: Record<string, unknown>) {

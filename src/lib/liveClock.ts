@@ -19,23 +19,27 @@ export function interpolateClock(
   const baseExtra = Math.max(0, extra ?? 0);
   if (elapsed == null) return { elapsed, extra: 0 };
   if (status === 'HT') return { elapsed: 45, extra: 0 };
-  if (!isLive(status)) return { elapsed, extra: baseExtra };
+  if (!isLive(status)) return { elapsed: elapsed > 90 ? 90 : elapsed, extra: elapsed > 90 ? elapsed - 90 : baseExtra };
+
   const t0 = updatedAt ? Date.parse(updatedAt) : NaN;
-  if (!Number.isFinite(t0)) return { elapsed, extra: baseExtra };
   const spm = Math.max(1, secondsPerMinute);
-  const add = Math.floor(Math.max(0, nowMs - t0) / 1000 / spm);
-  if (add <= 0) return { elapsed, extra: baseExtra };
+  const add = Number.isFinite(t0) ? Math.max(0, (nowMs - t0) / 1000 / spm) : 0;
+
   if (status === '1H') {
-    const t = elapsed + baseExtra + add;
-    if (t <= 45) return { elapsed: t, extra: 0 };
-    return { elapsed: 45, extra: Math.min(12, t - 45) };
+    const e = Math.min(elapsed, 45);
+    const baked = elapsed > 45 ? elapsed - 45 : 0;
+    const t = e + Math.max(baseExtra, baked) + add;
+    if (t < 45) return { elapsed: Math.floor(t), extra: 0 };
+    return { elapsed: 45, extra: Math.min(12, Math.max(0, Math.floor(t - 45))) };
   }
   if (status === '2H') {
-    const t = elapsed + baseExtra + add;
-    if (t <= 90) return { elapsed: t, extra: 0 };
-    return { elapsed: 90, extra: Math.min(12, t - 90) };
+    const e = Math.min(elapsed, 90);
+    const baked = elapsed > 90 ? elapsed - 90 : 0;
+    const t = e + Math.max(baseExtra, baked) + add;
+    if (t < 90) return { elapsed: Math.floor(t), extra: 0 };
+    return { elapsed: 90, extra: Math.min(12, Math.max(0, Math.floor(t - 90))) };
   }
-  if (status === 'ET') return { elapsed: Math.min(120, elapsed + add), extra: 0 };
+  if (status === 'ET') return { elapsed: Math.min(120, Math.floor(elapsed + add)), extra: 0 };
   return { elapsed, extra: baseExtra };
 }
 

@@ -7,7 +7,7 @@ import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/store/auth';
 import type { AppNotification, Bet, FixtureWithRelations, League, Profile, Standings, Team, Transaction } from '@/types/db';
 
-const FIXTURE_SELECT = `*, home:teams!home_team_id(*), away:teams!away_team_id(*), league:leagues(*), odds(*)`;
+const FIXTURE_SELECT = `*, elapsed_extra, home:teams!home_team_id(*), away:teams!away_team_id(*), league:leagues(*), odds(*)`;
 
 /** Oran testi ligi — puan durumu listesinde yok, canlıda "Test Maçları" olarak görünür. */
 export const TEST_LEAGUE_ID = 99999;
@@ -200,6 +200,8 @@ export interface SimLeagueStatus {
     calendar?: 'api' | 'rhythm';
     estimated?: number;
   } | null;
+  sim_schedule?: { days: number[]; hour_from: number; hour_to: number } | null;
+  schedule_default?: { days: number[]; hour_from: number; hour_to: number };
   teams: number;
   players: number;
   upcoming: number;
@@ -224,8 +226,12 @@ export async function simAdmin<T = Record<string, unknown>>(action: string, body
         const b = (await ctx.json()) as { error?: string };
         if (b?.error) throw new Error(b.error);
       } catch (e) {
-        if (e instanceof Error && e.message) throw e;
+        if (e instanceof Error && e.message && e.message !== error.message) throw e;
       }
+    }
+    const raw = error.message || String(error);
+    if (/non-2xx|timeout|timed out|504|546|529/i.test(raw)) {
+      throw new Error('Sunucu zaman aşımı. Başlayan ligler kayıtlı; Hepsini başlat’a tekrar bas.');
     }
     throw error;
   }
@@ -305,9 +311,9 @@ export function useAdminLiveFixtures() {
   });
 }
 
-export function useUpcomingSimFixtures(leagueId: number | null) {
+export function useUpcomingSimFixtures(leagueId: number | null, limit = 60) {
   return useQuery({
-    queryKey: ['admin', 'upcoming', leagueId],
+    queryKey: ['admin', 'upcoming', leagueId, limit],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('fixtures')
@@ -317,7 +323,7 @@ export function useUpcomingSimFixtures(leagueId: number | null) {
         .eq('archived', false)
         .eq('status_short', 'NS')
         .order('date')
-        .limit(60);
+        .limit(limit);
       if (error) throw error;
       return (data ?? []) as unknown as {
         id: number; date: string; round: string | null; status_short: string;
@@ -345,7 +351,7 @@ export function useStandings(leagueId: number | null) {
 
 export type LeagueFixture = Pick<
   FixtureWithRelations,
-  'id' | 'date' | 'round' | 'status_short' | 'elapsed' | 'elapsed_extra' | 'home_goals' | 'away_goals' | 'home' | 'away'
+  'id' | 'date' | 'round' | 'status_short' | 'elapsed' | 'elapsed_extra' | 'updated_at' | 'home_goals' | 'away_goals' | 'home' | 'away'
 >;
 
 /** Ligin sezon fikstürü (tarih/saat, skor). */
@@ -356,7 +362,7 @@ export function useLeagueFixtures(leagueId: number | null) {
       const { data, error } = await supabase
         .from('fixtures')
         .select(
-          'id, date, round, status_short, elapsed, elapsed_extra, home_goals, away_goals, home:teams!home_team_id(id, name, logo), away:teams!away_team_id(id, name, logo)',
+          'id, date, round, status_short, elapsed, elapsed_extra, updated_at, home_goals, away_goals, home:teams!home_team_id(id, name, logo), away:teams!away_team_id(id, name, logo)',
         )
         .eq('league_id', leagueId!)
         .eq('archived', false)

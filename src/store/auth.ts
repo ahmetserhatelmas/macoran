@@ -94,5 +94,13 @@ function translateAuthError(msg: string) {
   if (m.includes('invalid email') || m.includes('unable to validate email')) return 'Geçersiz e-posta adresi.';
   if (m.includes('rate limit')) return 'Çok fazla deneme. Biraz sonra tekrar deneyin.';
   if (m.includes('username') && m.includes('unique')) return 'Bu kullanıcı adı alınmış.';
+  if (
+    m.includes('fetch') ||
+    m.includes('network') ||
+    m.includes('unknownhost') ||
+    m.includes('placeholder.supabase')
+  ) {
+    return 'Sunucuya bağlanılamadı. İnternetini kontrol et.';
+  }
   return msg;
 }

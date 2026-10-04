@@ -47,7 +47,9 @@ export default function MatchScreen() {
 
   const liveNow = f ? isLive(f.status_short) : false;
   const clockNow = useLiveNow(liveNow);
-  const clock = f ? interpolateClock(f.status_short, f.elapsed, f.elapsed_extra, f.updated_at, clockNow) : { elapsed: f?.elapsed ?? null, extra: 0 };
+  const clock = f
+    ? interpolateClock(f.status_short, f.elapsed, f.elapsed_extra, f.updated_at, clockNow)
+    : { elapsed: null, extra: 0 };
   const liveElapsed = clock.elapsed;
   const liveExtra = clock.extra;
   const finishedNow = f ? isFinished(f.status_short) : false;

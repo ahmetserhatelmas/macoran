@@ -24,6 +24,7 @@ import {
   Screen,
 } from "@/components/ui";
 import { ago, dayjs } from "@/lib/format";
+import { formatSchedule, SCHEDULE_PRESETS, WEEKDAYS, type LeagueSchedule } from "@/lib/leagueSchedule";
 import {
   simAdmin,
   type SimLeagueStatus,
@@ -53,6 +54,7 @@ export default function SimAdminScreen() {
   const { data, isLoading, refetch } = useSimStatus();
   const [busy, setBusy] = useState<string | null>(null);
   const [startTarget, setStartTarget] = useState<SimLeagueStatus | "all" | null>(null);
+  const [scheduleLeague, setScheduleLeague] = useState<SimLeagueStatus | null>(null);
 
   useEffect(() => {
     if (isAdmin === false) router.replace("/(tabs)");
@@ -277,6 +279,8 @@ export default function SimAdminScreen() {
                   )
                 }
                 onScenario={() => router.push(`/admin/scenario/${l.id}`)}
+                onSchedule={() => setScheduleLeague(l)}
+                onDates={() => router.push(`/admin/dates/${l.id}`)}
               />
             ))}
           </View>
@@ -286,22 +290,42 @@ export default function SimAdminScreen() {
       <StartLeagueModal
         target={startTarget}
         pendingCount={leagues.filter((l) => !l.sim_started_at).length}
-        busy={busy === (startTarget === "all" ? "league-all" : `league-${startTarget && startTarget !== "all" ? startTarget.id : ""}`)}
+        busy={busy === (startTarget === "all" ? "league-all" : `league-${startTarget?.id ?? ""}`)}
         onClose={() => setStartTarget(null)}
         onStart={(body) => {
           if (startTarget === "all") {
-            run("league-all", "start_leagues", body, (r) => {
-              setStartTarget(null);
-              const started = (r.started as { name: string; fixtures?: number }[]) ?? [];
-              const failed = (r.failed as { name: string; error: string }[]) ?? [];
-              const skipped = (r.skipped as { name: string }[]) ?? [];
-              const lines = [
-                `${started.length} lig başlatıldı.`,
-                skipped.length ? `${skipped.length} zaten aktifti.` : "",
-                failed.length ? `Başlamayan: ${failed.map((f) => `${f.name} (${f.error})`).join(", ")}` : "",
-              ].filter(Boolean);
-              Alert.alert(failed.length ? "Kısmen başladı" : "Ligler başlatıldı", lines.join("\n"));
-            });
+            setBusy("league-all");
+            void (async () => {
+              const startedNames: string[] = [];
+              const realFail: { name: string; error: string }[] = [];
+              let skippedN = 0;
+              try {
+                for (let i = 0; i < 12; i++) {
+                  const r = await simAdmin("start_leagues", body);
+                  const batch = (r.started as { name: string }[]) ?? [];
+                  startedNames.push(...batch.map((x) => x.name));
+                  skippedN = Math.max(skippedN, ((r.skipped as unknown[]) ?? []).length);
+                  const failed = (r.failed as { name: string; error: string }[]) ?? [];
+                  realFail.push(...failed.filter((f) => f.error !== "süre doldu"));
+                  const more = failed.some((f) => f.error === "süre doldu") || Number(r.remaining ?? 0) > 0;
+                  await refetch();
+                  if (!more) break;
+                }
+                setStartTarget(null);
+                invalidateAll();
+                const lines = [
+                  `${startedNames.length} lig başlatıldı.`,
+                  skippedN ? `${skippedN} zaten aktifti.` : "",
+                  realFail.length ? `Başlamayan: ${realFail.map((f) => `${f.name} (${f.error})`).join(", ")}` : "",
+                ].filter(Boolean);
+                Alert.alert(realFail.length ? "Kısmen başladı" : "Ligler başlatıldı", lines.join("\n") || "Tamam.");
+              } catch (e) {
+                await refetch();
+                Alert.alert("Hata", e instanceof Error ? e.message : String(e));
+              } finally {
+                setBusy(null);
+              }
+            })();
             return;
           }
           const l = startTarget!;
@@ -319,6 +343,23 @@ export default function SimAdminScreen() {
             },
           );
         }}
+      />
+      <ScheduleModal
+        league={scheduleLeague}
+        busy={busy === (scheduleLeague ? `sched-${scheduleLeague.id}` : "")}
+        onClose={() => setScheduleLeague(null)}
+        onSave={(leagueId, schedule) =>
+          run(`sched-${leagueId}`, "set_schedule", { league_id: leagueId, schedule }, (r) => {
+            setScheduleLeague(null);
+            const n = Number(r.moved ?? 0);
+            Alert.alert(
+              "Takvim kaydedildi",
+              n
+                ? `${n} başlamamış maç yeni gün/saate alındı.`
+                : "Kayıtlı. Lig başlatınca bu gün ve saatler kullanılır.",
+            );
+          })
+        }
       />
     </Screen>
   );
@@ -460,14 +501,19 @@ function LeagueRow({
   onStart,
   onStop,
   onScenario,
+  onSchedule,
+  onDates,
 }: {
   league: SimLeagueStatus;
   busy: boolean;
   onStart: () => void;
   onStop: () => void;
   onScenario: () => void;
+  onSchedule: () => void;
+  onDates: () => void;
 }) {
   const running = !!l.sim_started_at;
+  const sched = (l.sim_schedule ?? l.schedule_default) as LeagueSchedule | undefined;
   return (
     <View style={styles.leagueRow}>
       <View style={{ flex: 1, gap: 2 }}>
@@ -490,6 +536,7 @@ function LeagueRow({
             ? ` · ${l.played} oynandı / ${l.upcoming} kalan · ${l.sim_config?.rounds ?? "?"} hafta${l.sim_config?.calendar === "api" ? " · gerçek fikstür" : ""}`
             : ""}
         </Muted>
+        <Muted style={{ fontSize: 11 }}>{formatSchedule(sched ?? null)}</Muted>
         {running && l.sim_started_at ? (
           <Muted style={{ fontSize: 11 }}>
             Başladı {ago(l.sim_started_at)}
@@ -497,8 +544,14 @@ function LeagueRow({
         ) : null}
       </View>
       <View style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
+        <Pressable onPress={onSchedule} style={styles.iconBtn} accessibilityLabel="Gün ve saat">
+          <Ionicons name="time-outline" size={18} color={colors.text} />
+        </Pressable>
         {running ? (
           <>
+            <Pressable onPress={onDates} style={styles.iconBtn} accessibilityLabel="Maç tarihi">
+              <Ionicons name="calendar-outline" size={18} color={colors.text} />
+            </Pressable>
             <Pressable
               onPress={onScenario}
               style={styles.iconBtn}
@@ -523,6 +576,150 @@ function LeagueRow({
             onPress={onStart}
           />
         )}
+      </View>
+    </View>
+  );
+}
+
+function ScheduleModal({
+  league,
+  busy,
+  onClose,
+  onSave,
+}: {
+  league: SimLeagueStatus | null;
+  busy: boolean;
+  onClose: () => void;
+  onSave: (leagueId: number, schedule: LeagueSchedule) => void;
+}) {
+  return (
+    <Modal visible={!!league} transparent animationType="fade" onRequestClose={onClose}>
+      <KeyboardAvoidingView behavior="padding" style={styles.modalBg}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        {league ? (
+          <ScheduleForm
+            key={league.id}
+            league={league}
+            busy={busy}
+            onClose={onClose}
+            onSave={onSave}
+          />
+        ) : null}
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+function ScheduleForm({
+  league,
+  busy,
+  onClose,
+  onSave,
+}: {
+  league: SimLeagueStatus;
+  busy: boolean;
+  onClose: () => void;
+  onSave: (leagueId: number, schedule: LeagueSchedule) => void;
+}) {
+  const initial = (league.sim_schedule ?? league.schedule_default ?? {
+    days: [5, 6, 7],
+    hour_from: 16,
+    hour_to: 22,
+  }) as LeagueSchedule;
+  const [days, setDays] = useState<number[]>(initial.days);
+  const [fromH, setFromH] = useState(initial.hour_from);
+  const [toH, setToH] = useState(initial.hour_to);
+
+  const toggle = (d: number) => {
+    setDays((cur) => (cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d].sort((a, b) => a - b)));
+  };
+  const bump = (which: "from" | "to", dir: -1 | 1) => {
+    if (which === "from") setFromH((h) => Math.max(0, Math.min(23, h + dir)));
+    else setToH((h) => Math.max(0, Math.min(23, h + dir)));
+  };
+  const valid = days.length > 0 && fromH <= toH;
+
+  return (
+    <View style={styles.modal}>
+      <Text style={styles.modalTitle}>{league.name}</Text>
+      <Muted style={{ fontSize: 12 }}>
+        Maç günleri ve kickoff aralığı (Türkiye saati). Lig açıksa başlamamış maçlar buna göre kayar.
+      </Muted>
+      <Text style={styles.fieldLabel}>Günler</Text>
+      <View style={styles.dayRow}>
+        {WEEKDAYS.map((w) => {
+          const on = days.includes(w.d);
+          return (
+            <Pressable
+              key={w.d}
+              onPress={() => toggle(w.d)}
+              style={[styles.dayChip, on && styles.dayChipOn]}
+            >
+              <Text style={[styles.dayChipText, on && styles.dayChipTextOn]}>{w.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <Text style={styles.fieldLabel}>Saat aralığı (TR)</Text>
+      <View style={styles.hourRow}>
+        <HourStepper label="Başlangıç" value={fromH} onBump={(d) => bump("from", d)} />
+        <Text style={{ color: colors.textMuted, fontWeight: "700" }}>—</Text>
+        <HourStepper label="Bitiş" value={toH} onBump={(d) => bump("to", d)} />
+      </View>
+      {fromH > toH ? (
+        <Muted style={{ fontSize: 11, color: colors.danger }}>Bitiş, başlangıçtan küçük olamaz.</Muted>
+      ) : null}
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+        {SCHEDULE_PRESETS.map((p) => (
+          <Pressable
+            key={p.label}
+            onPress={() => {
+              setDays(p.days);
+              setFromH(p.hour_from);
+              setToH(p.hour_to);
+            }}
+            style={styles.presetChip}
+          >
+            <Text style={styles.presetText}>{p.label}</Text>
+          </Pressable>
+        ))}
+      </View>
+      <View style={{ flexDirection: "row", gap: spacing.sm }}>
+        <Button title="Vazgeç" variant="ghost" style={{ flex: 1 }} onPress={onClose} />
+        <Button
+          title="Kaydet"
+          icon="checkmark"
+          style={{ flex: 1 }}
+          loading={busy}
+          disabled={!valid}
+          onPress={() => onSave(league.id, { days, hour_from: fromH, hour_to: toH })}
+        />
+      </View>
+    </View>
+  );
+}
+
+function HourStepper({
+  label,
+  value,
+  onBump,
+}: {
+  label: string;
+  value: number;
+  onBump: (dir: -1 | 1) => void;
+}) {
+  const hh = `${String(value).padStart(2, "0")}:00`;
+  return (
+    <View style={{ alignItems: "center", gap: 6, flex: 1 }}>
+      <Muted style={{ fontSize: 11 }}>{label}</Muted>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <Pressable onPress={() => onBump(-1)} style={styles.stepBtn} hitSlop={8}>
+          <Ionicons name="remove" size={18} color={colors.text} />
+        </Pressable>
+        <Text style={styles.hourValue}>{hh}</Text>
+        <Pressable onPress={() => onBump(1)} style={styles.stepBtn} hitSlop={8}>
+          <Ionicons name="add" size={18} color={colors.text} />
+        </Pressable>
       </View>
     </View>
   );
@@ -608,7 +805,7 @@ function StartLeagueForm({
       <Text style={styles.modalTitle}>{title}</Text>
       <Muted style={{ fontSize: 12 }}>
         {all
-          ? "Her lig bu sezonun gerçek fikstürünü (eşleşmeler, günler, saatler) alır; ilk hafta seçtiğin tarihe hizalanır. Tarihi belirsiz haftalar o ligin alışılmış günlerine göre tahmin edilir. Kadrolar API-Football'dan çekilir."
+          ? "Her lig bu sezonun gerçek fikstürünü (eşleşmeler) alır; gün/saat lig ritmine göre yayılır: Avrupa ligleri öğleden sonra–akşam, Brezilya/MLS gece, Japonya gündüz. UEFA kulüp kupaları hafta sonuna kilitlenir. Kadrolar API-Football'dan çekilir."
           : "Bu sezonun gerçek fikstürü kullanılır (kim kiminle, hangi gün/saat). İlk hafta aşağıdaki tarihe kaydırılır; 10. hafta gibi günü net olmayan maçlar ligin tipik günlerine göre yerleştirilir."}
       </Muted>
       <Input
@@ -671,9 +868,9 @@ function StartLeagueForm({
         </>
       ) : (
         <Muted style={{ fontSize: 12 }}>
-          Süper Lig Cuma–Pazartesi, Premier League Cmt–Paz, Şampiyonlar Ligi
-          Salı–Çarşamba… Haftalar arasında uluslararası ara boşlukları da
-          korunur.
+          Süper Lig, 1. Lig, Championship, Ligue 2 gibi ligler Pazartesi–
+          Salı dahil her gün dolar; saatler akşama yayılır. UEFA kupaları
+          hafta sonu. Başlatınca ilk maçlar bugünden (şimdiden sonra) yazılır.
         </Muted>
       )}
       <View style={{ flexDirection: "row", gap: spacing.sm }}>
@@ -788,4 +985,40 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   modalTitle: { color: colors.text, fontWeight: "800", fontSize: 16 },
+  fieldLabel: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    marginTop: 4,
+  },
+  dayRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  dayChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surface3,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  dayChipOn: { backgroundColor: colors.primary, borderColor: colors.primary },
+  dayChipText: { color: colors.textMuted, fontWeight: "700", fontSize: 12 },
+  dayChipTextOn: { color: colors.primaryText },
+  hourRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  stepBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surface3,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  hourValue: { color: colors.text, fontWeight: "800", fontSize: 18, minWidth: 58, textAlign: "center" },
+  presetChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surface3,
+  },
 });

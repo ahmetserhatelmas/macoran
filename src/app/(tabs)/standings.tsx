@@ -8,6 +8,7 @@ import { TeamLogo } from '@/components/TeamLogo';
 import { filterLeagues } from '@/components/LeaguePicker';
 import { Badge, EmptyState, Header, IconButton, Input, Loading, Muted, Screen } from '@/components/ui';
 import { ago, dateShort, dayjs, dayLabel, time } from '@/lib/format';
+import { interpolateClock, useLiveNow } from '@/lib/liveClock';
 import { isFinished, isLive, statusLabel } from '@/lib/markets';
 import {
   type LeagueFixture,
@@ -261,12 +262,14 @@ function LeagueFixtures({ leagueId }: { leagueId: number }) {
 function FixtureRow({ fixture: f, onPress }: { fixture: LeagueFixture; onPress: () => void }) {
   const live = isLive(f.status_short);
   const finished = isFinished(f.status_short);
+  const now = useLiveNow(live);
+  const clock = interpolateClock(f.status_short, f.elapsed, f.elapsed_extra, f.updated_at, now);
   const scoreShown = live || finished || f.home_goals !== null;
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.fxRow, live && styles.liveRow, pressed && { opacity: 0.85 }]}>
       <View style={styles.fxWhen}>
         {live ? (
-          <Badge text={statusLabel(f.status_short, f.elapsed, f.elapsed_extra ?? 0)} color="rgba(239,68,68,0.15)" textColor={colors.live} />
+          <Badge text={statusLabel(f.status_short, clock.elapsed, clock.extra)} color="rgba(239,68,68,0.15)" textColor={colors.live} />
         ) : finished ? (
           <Text style={styles.fxTimeMuted}>MS</Text>
         ) : (

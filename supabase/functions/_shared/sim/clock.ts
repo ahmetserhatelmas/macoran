@@ -20,25 +20,29 @@ export interface Clock {
   status: "1H" | "HT" | "2H" | "FT";
 }
 
-export function matchClock(kickoffAt: Date, now: Date, st: { h1: number; h2: number }, cfg: ClockSettings): Clock {
+export function matchClock(kickoffAt: Date, now: Date, st: { h1?: number; h2?: number } | null | undefined, cfg: ClockSettings): Clock {
   const spm = Math.max(1, cfg.seconds_per_minute);
+  const st1 = Math.max(1, Math.min(12, Number(st?.h1) || 3));
+  const st2 = Math.max(1, Math.min(12, Number(st?.h2) || 5));
   const s = Math.max(0, (now.getTime() - kickoffAt.getTime()) / 1000);
-  const L1 = 45 + st.h1;
-  const L2 = 45 + st.h2;
+  const L1 = 45 + st1;
+  const L2 = 45 + st2;
   const firstEnd = L1 * spm;
   const htEnd = firstEnd + Math.max(0, cfg.halftime_seconds);
   const secondEnd = htEnd + L2 * spm;
 
   if (s < firstEnd) {
     const abs = Math.min(L1, Math.floor(s / spm) + 1);
-    return { phase: "1H", abs, key: abs, elapsed: Math.min(abs, 45), extra: Math.max(0, abs - 45), status: "1H" };
+    const extra = Math.max(0, abs - 45);
+    return { phase: "1H", abs, key: abs, elapsed: Math.min(abs, 45), extra, status: "1H" };
   }
   if (s < htEnd) {
     return { phase: "HT", abs: 45, key: 99, elapsed: 45, extra: 0, status: "HT" };
   }
   if (s < secondEnd) {
     const abs = 45 + Math.min(L2, Math.floor((s - htEnd) / spm) + 1);
-    return { phase: "2H", abs, key: 100 + abs, elapsed: Math.min(abs, 90), extra: Math.max(0, abs - 90), status: "2H" };
+    const extra = Math.max(0, abs - 90);
+    return { phase: "2H", abs, key: 100 + abs, elapsed: Math.min(abs, 90), extra, status: "2H" };
   }
-  return { phase: "FT", abs: 90 + st.h2, key: 999, elapsed: 90, extra: 0, status: "FT" };
+  return { phase: "FT", abs: 90 + st2, key: 999, elapsed: 90, extra: st2, status: "FT" };
 }

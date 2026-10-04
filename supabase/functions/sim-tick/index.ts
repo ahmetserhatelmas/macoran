@@ -75,6 +75,7 @@ Deno.serve(async (req) => {
       loadLeagues(db),
       db.from("fixtures").select("*")
         .eq("is_sim", true).eq("archived", false).eq("status_short", "NS")
+        .gte("date", new Date(now.getTime() - 4 * 3600_000).toISOString())
         .lte("date", now.toISOString()).order("date").limit(40),
       db.from("fixtures").select("*")
         .eq("is_sim", true).eq("archived", false).in("status_short", LIVE)
@@ -266,6 +267,7 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
 
   const homeGoals = snap.h1 + snap.h2, awayGoals = snap.a1 + snap.a2;
   const pastFirstHalf = clock.phase === "HT" || clock.phase === "2H" || clock.phase === "FT";
+  const becameHT = clock.phase === "HT" && f.status_short === "1H";
   const fixtureUpdate: Record<string, unknown> = {
     status_short: clock.status,
     status_long: clock.status === "1H" ? "First Half" : clock.status === "HT" ? "Halftime" : clock.status === "2H" ? "Second Half" : "Match Finished",
@@ -331,6 +333,9 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
   for (const e of newly) {
     const note = matchAlert(e, home, away, `${homeGoals}-${awayGoals}`);
     if (note) await notifyFollowers(db, f.id, note.type, note.title, note.body);
+  }
+  if (becameHT) {
+    await notifyFollowers(db, f.id, "ht", "Devre arası", `${home} ${snap.h1}-${snap.a1} ${away}`);
   }
 
   if (!isSuspended && reprice) {
@@ -544,6 +549,14 @@ function matchAlert(e: SimEvent, home: string, away: string, score: string): { t
   const min = eventMinute(e);
   const team = e.side === "home" ? home : away;
   const player = e.player?.name;
+  if (e.type === "Goal" && e.detail === "Missed Penalty") {
+    const who = player ? `${player} (${team})` : team;
+    return {
+      type: "pen_miss",
+      title: "Penaltı kaçtı",
+      body: `${min} ${who} · ${score}`,
+    };
+  }
   if (e.type === "Goal" && e.detail !== "Missed Penalty") {
     const who = player ? `${player} (${team})` : team;
     const kind = e.detail === "Own Goal" ? "Kendi kalesine" : e.detail === "Penalty" ? "Penaltıdan" : "";

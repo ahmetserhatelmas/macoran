@@ -11,6 +11,33 @@ interface Payload {
   id?: string | null;
 }
 
+/** Android 8+ kanal sesi kilitlenir; tür başına ayrı kanal + paketlenmiş wav. */
+function soundForType(type?: string): { sound: string; channelId: string } {
+  switch (type) {
+    case "kickoff":
+      return { sound: "kickoff.wav", channelId: "macoran-kickoff" };
+    case "goal":
+      return { sound: "goal.wav", channelId: "macoran-goal" };
+    case "ft":
+      return { sound: "fulltime.wav", channelId: "macoran-ft" };
+    case "ht":
+      return { sound: "ht.wav", channelId: "macoran-ht" };
+    case "penalty":
+      return { sound: "foul.wav", channelId: "macoran-foul" };
+    case "pen_miss":
+      return { sound: "miss.wav", channelId: "macoran-miss" };
+    default:
+      return { sound: "default", channelId: "macoran" };
+  }
+}
+
+interface Ticket {
+  status?: string;
+  id?: string;
+  message?: string;
+  details?: { error?: string };
+}
+
 Deno.serve(async (req) => {
   const db = adminClient();
   if (!(await authorize(req, db))) return json({ error: "unauthorized" }, 401);
@@ -28,10 +55,13 @@ Deno.serve(async (req) => {
   const tokens = (rows ?? []).map((r) => r.token as string).filter(Boolean);
   if (!tokens.length) return json({ ok: true, sent: 0 });
 
+  const audio = soundForType(body.type);
   const messages = tokens.map((to) => ({
     to,
-    sound: "default",
-    channelId: "macoran",
+    sound: audio.sound,
+    channelId: audio.channelId,
+    priority: "high",
+    ttl: 3600,
     title: body.title,
     body: body.body ?? "",
     data: {
@@ -54,15 +84,38 @@ Deno.serve(async (req) => {
   const out = await res.json().catch(() => ({}));
   if (!res.ok) return json({ error: "expo push failed", detail: out }, 502);
 
-  const tickets = Array.isArray(out?.data) ? out.data : [out?.data];
-  const stale: string[] = [];
+  const tickets: Ticket[] = Array.isArray(out?.data) ? out.data : [out?.data];
+  const stale = new Set<string>();
+  const receiptIds: string[] = [];
   for (let i = 0; i < tickets.length; i++) {
     const t = tickets[i];
     if (t?.status === "error" && t?.details?.error === "DeviceNotRegistered") {
-      stale.push(tokens[i]);
+      stale.add(tokens[i]);
+    } else if (t?.status === "ok" && t.id) {
+      receiptIds.push(t.id);
     }
   }
-  if (stale.length) await db.from("push_tokens").delete().in("token", stale);
 
-  return json({ ok: true, sent: tokens.length, stale: stale.length });
+  if (receiptIds.length) {
+    await new Promise((r) => setTimeout(r, 2500));
+    const recRes = await fetch("https://exp.host/--/api/v2/push/getReceipts", {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: receiptIds }),
+    });
+    const rec = await recRes.json().catch(() => ({}));
+    const data = (rec?.data ?? {}) as Record<string, Ticket>;
+    for (let i = 0; i < tickets.length; i++) {
+      const id = tickets[i]?.id;
+      if (!id) continue;
+      const r = data[id];
+      if (r?.status === "error" && r?.details?.error === "DeviceNotRegistered") {
+        stale.add(tokens[i]);
+      }
+    }
+  }
+
+  if (stale.size) await db.from("push_tokens").delete().in("token", [...stale]);
+
+  return json({ ok: true, sent: tokens.length, stale: stale.size });
 });

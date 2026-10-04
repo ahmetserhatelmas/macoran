@@ -4,12 +4,12 @@ import * as Notifications from 'expo-notifications';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef } from 'react';
-import { Platform } from 'react-native';
+import { AppState, InteractionManager, Platform } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { useRealtimeSync } from '@/lib/queries';
-import { registerPushToken, routeFromPush, type PushPayload } from '@/lib/push';
+import { registerPushToken, requestNotificationPermission, routeFromPush, type PushPayload } from '@/lib/push';
 import { colors } from '@/lib/theme';
 import { useAuth } from '@/store/auth';
 import { useFavorites } from '@/store/favorites';
@@ -33,9 +33,38 @@ function PushBridge() {
   const seen = useRef<string | null>(null);
 
   useEffect(() => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const task = InteractionManager.runAfterInteractions(() => {
+      timeout = setTimeout(() => {
+        void requestNotificationPermission().then((ok) => {
+          if (ok && session) void registerPushToken();
+        });
+      }, 800);
+    });
+    return () => {
+      task.cancel();
+      if (timeout) clearTimeout(timeout);
+    };
+  }, [session]);
+
+  useEffect(() => {
     if (!session) return;
-    registerPushToken();
-    void useFavorites.getState().syncWithServer();
+    const run = () => void useFavorites.getState().syncWithServer();
+    if (useFavorites.persist.hasHydrated()) {
+      run();
+      return;
+    }
+    return useFavorites.persist.onFinishHydration(run);
+  }, [session]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && session) {
+        void registerPushToken();
+        void useFavorites.getState().syncWithServer();
+      }
+    });
+    return () => sub.remove();
   }, [session]);
 
   useEffect(() => {
@@ -103,6 +132,7 @@ export default function RootLayout() {
               <Stack.Screen name="admin/sim" />
               <Stack.Screen name="admin/live" />
               <Stack.Screen name="admin/scenario/[leagueId]" />
+              <Stack.Screen name="admin/dates/[leagueId]" />
             </Stack.Protected>
             <Stack.Protected guard={!session}>
               <Stack.Screen name="(auth)/login" />

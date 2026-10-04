@@ -14,7 +14,9 @@ import type { AppNotification } from '@/types/db';
 const ICON: Record<string, { name: React.ComponentProps<typeof Ionicons>['name']; color: string }> = {
   goal: { name: 'football', color: colors.success },
   kickoff: { name: 'play-circle', color: colors.info },
+  ht: { name: 'pause-circle', color: colors.warn },
   penalty: { name: 'alert-circle', color: colors.gold },
+  pen_miss: { name: 'close-circle', color: colors.textMuted },
   red: { name: 'square', color: colors.danger },
   ft: { name: 'flag', color: colors.textMuted },
   bet_won: { name: 'trophy', color: colors.gold },

@@ -10,7 +10,7 @@ import { LeaguePicker } from '@/components/LeaguePicker';
 import { NotificationBell } from '@/components/NotificationBell';
 import { EmptyState, Header, IconButton, Loading, Screen } from '@/components/ui';
 import { dayjs } from '@/lib/format';
-import { useFixturesByDate, useLeagues, useLiveFixtures } from '@/lib/queries';
+import { TEST_LEAGUE_ID, useFixturesByDate, useLeagues, useLiveFixtures } from '@/lib/queries';
 import { colors, spacing } from '@/lib/theme';
 import { useBetslip } from '@/store/betslip';
 import { useFavorites } from '@/store/favorites';
@@ -29,8 +29,24 @@ export default function MatchesScreen() {
   const byDate = useFixturesByDate(date, leagueId);
   const live = useLiveFixtures();
   const liveCount = live.data?.length ?? 0;
-  // Canlı filtresi açıkken tarih yerine o an oynanan tüm maçlar gösterilir
-  const { data: fixtures, isLoading, refetch, isRefetching } = liveOnly ? live : byDate;
+  const isToday = date.isSame(dayjs(), 'day');
+  // Canlı filtresi: tüm canlılar. Bugün: o günün maçları + hâlâ oynanan (kickoff dün/gece olsa bile).
+  const fixtures = useMemo(() => {
+    if (liveOnly) return live.data;
+    const list = byDate.data ?? [];
+    if (!isToday || !live.data?.length) return byDate.data;
+    const ids = new Set(list.map((f) => f.id));
+    const extra = live.data.filter((f) => {
+      if (ids.has(f.id)) return false;
+      if (leagueId) return f.league_id === leagueId;
+      return f.league_id !== TEST_LEAGUE_ID;
+    });
+    if (!extra.length) return byDate.data;
+    return [...extra, ...list].sort((a, b) => a.date.localeCompare(b.date));
+  }, [liveOnly, live.data, byDate.data, isToday, leagueId]);
+  const isLoading = liveOnly ? live.isLoading : byDate.isLoading;
+  const isRefetching = liveOnly ? live.isRefetching : byDate.isRefetching;
+  const refetch = liveOnly ? live.refetch : byDate.refetch;
   const syncOdds = useBetslip((s) => s.syncOdds);
 
   // Kupondaki oranları ekrandaki güncel oranlarla eşitle
