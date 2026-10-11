@@ -157,6 +157,10 @@ Deno.serve(async (req) => {
     // 3) Maç öncesi oranlar (canlı iş uzadıysa sonraya bırak)
     // ------------------------------------------------------------------
     priced = Date.now() - t0 > 45_000 ? 0 : await refreshPrematch(db, leagues, settings, now);
+    // Skor satırı yazıldı. 3 sn sonra push gider; tabela bu arada güncellenir.
+    if (liveCount > 0 || started.length > 0 || finished.length > 0) {
+      await new Promise((r) => setTimeout(r, 3000));
+    }
     try { await db.rpc("flush_notification_pushes"); } catch { /* sıradaki tick */ }
 
     const ms = Date.now() - t0;
@@ -361,7 +365,7 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
     }
   }
 
-  // Skor ve kupon satırı yazıldıktan sonra haber ver. deliver_at, listenin yenilenmesini bekler.
+  // Skor ve kupon satırı yazıldı. Bildirim 3 sn sonra gider; tabela önce güncellenir.
   const newly = full.events.slice(sm.revealed, revealCount);
   const home = teams.get(f.home_team_id)?.name ?? "Ev";
   const away = teams.get(f.away_team_id)?.name ?? "Dep";

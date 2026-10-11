@@ -76,7 +76,7 @@ export function useLiveFixtures() {
       if (error) throw error;
       return (data as unknown as FixtureWithRelations[]).map(normalizeFixture);
     },
-    refetchInterval: 15_000,
+    refetchInterval: 2_000,
   });
 }
 
@@ -91,7 +91,7 @@ export function useFixture(id: number) {
       return normalizeFixture(data as unknown as FixtureWithRelations);
     },
     enabled: Number.isFinite(id),
-    refetchInterval: (q) => (q.state.data && LIVE_STATUSES.includes(q.state.data.status_short) ? 8_000 : 60_000),
+    refetchInterval: (q) => (q.state.data && LIVE_STATUSES.includes(q.state.data.status_short) ? 2_000 : 60_000),
   });
 }
 
@@ -417,7 +417,7 @@ export function useMyBets() {
       }));
     },
     enabled: !!uid,
-    refetchInterval: 30_000,
+    refetchInterval: 3_000,
   });
 }
 
@@ -484,6 +484,7 @@ export function useMyTransactions() {
 
 export function useNotifications() {
   const uid = useAuth((s) => s.session?.user.id);
+  const qc = useQueryClient();
   return useQuery({
     queryKey: ['notifications', uid],
     queryFn: async () => {
@@ -495,7 +496,17 @@ export function useNotifications() {
         .limit(80);
       if (error) throw error;
       const now = Date.now();
-      return ((data ?? []) as AppNotification[]).filter((n) => !n.deliver_at || Date.parse(n.deliver_at) <= now);
+      const rows = (data ?? []) as AppNotification[];
+      const dueAt = rows.reduce<number | null>((soon, n) => {
+        const t = n.deliver_at ? Date.parse(n.deliver_at) : NaN;
+        if (!Number.isFinite(t) || t <= now) return soon;
+        return soon == null || t < soon ? t : soon;
+      }, null);
+      if (dueAt != null) {
+        const wait = Math.min(dueAt - now + 200, 8_000);
+        setTimeout(() => qc.invalidateQueries({ queryKey: ['notifications', uid] }), wait);
+      }
+      return rows.filter((n) => !n.deliver_at || Date.parse(n.deliver_at) <= now);
     },
     enabled: !!uid,
     refetchInterval: 8_000,
