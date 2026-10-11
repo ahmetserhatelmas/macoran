@@ -378,6 +378,79 @@ const RHYTHM: Record<number, Rhythm> = {
   13: { tz: TZ.br, weekGapDays: 14, slots: MID_UCL },
 };
 
+const EU_RHYTHM: Rhythm = { tz: TZ.eu, weekGapDays: 7, slots: FRI_MON_EU, midweek: MID_TW };
+const UK_RHYTHM: Rhythm = {
+  tz: TZ.uk, weekGapDays: 7,
+  slots: [
+    { dow: 2, hour: 19, minute: 45 },
+    { dow: 6, hour: 12, minute: 30 },
+    { dow: 6, hour: 15, minute: 0 },
+    { dow: 7, hour: 15, minute: 0 },
+  ],
+  midweek: [{ dow: 3, hour: 19, minute: 45 }],
+};
+const NORDIC_RHYTHM: Rhythm = {
+  tz: 60, weekGapDays: 7,
+  slots: [
+    { dow: 1, hour: 19, minute: 0 },
+    { dow: 5, hour: 19, minute: 0 },
+    { dow: 6, hour: 15, minute: 0 },
+    { dow: 6, hour: 18, minute: 0 },
+    { dow: 7, hour: 15, minute: 0 },
+    { dow: 7, hour: 18, minute: 0 },
+  ],
+  midweek: [{ dow: 3, hour: 19, minute: 0 }],
+};
+for (const id of [89, 145, 207, 208, 345, 106, 283, 271, 210, 286, 333, 235, 373, 332, 318, 315, 383, 200]) {
+  RHYTHM[id] = EU_RHYTHM;
+}
+for (const id of [41, 180, 357, 110]) RHYTHM[id] = UK_RHYTHM;
+for (const id of [119, 103, 113, 164]) RHYTHM[id] = NORDIC_RHYTHM;
+RHYTHM[244] = { ...NORDIC_RHYTHM, tz: TZ.eu };
+RHYTHM[95] = { tz: TZ.pt, weekGapDays: 7, slots: FRI_MON_EU, midweek: MID_TW };
+RHYTHM[205] = {
+  tz: TZ.tr, weekGapDays: 7,
+  slots: [
+    { dow: 1, hour: 20, minute: 0 },
+    { dow: 2, hour: 16, minute: 0 },
+    { dow: 2, hour: 19, minute: 0 },
+    { dow: 6, hour: 14, minute: 0 },
+    { dow: 6, hour: 16, minute: 0 },
+    { dow: 7, hour: 14, minute: 0 },
+  ],
+  midweek: [{ dow: 3, hour: 16, minute: 0 }],
+};
+RHYTHM[72] = RHYTHM[71];
+RHYTHM[129] = RHYTHM[128];
+for (const id of [265, 268]) RHYTHM[id] = { tz: TZ.ar, weekGapDays: 7, slots: SAT_SUN, midweek: [{ dow: 3, hour: 20, minute: 0 }] };
+for (const id of [239, 242, 281]) {
+  RHYTHM[id] = { tz: -300, weekGapDays: 7, slots: SAT_SUN, midweek: [{ dow: 3, hour: 19, minute: 30 }] };
+}
+RHYTHM[99] = RHYTHM[98];
+RHYTHM[293] = RHYTHM[292];
+RHYTHM[169] = {
+  tz: 480, weekGapDays: 7,
+  slots: [
+    { dow: 5, hour: 19, minute: 35 },
+    { dow: 6, hour: 15, minute: 30 },
+    { dow: 6, hour: 19, minute: 35 },
+    { dow: 7, hour: 15, minute: 30 },
+    { dow: 7, hour: 19, minute: 35 },
+  ],
+};
+RHYTHM[296] = {
+  tz: 420, weekGapDays: 7,
+  slots: [
+    { dow: 5, hour: 18, minute: 0 },
+    { dow: 6, hour: 18, minute: 0 },
+    { dow: 6, hour: 20, minute: 0 },
+    { dow: 7, hour: 18, minute: 0 },
+  ],
+};
+for (const id of [305, 290]) RHYTHM[id] = RHYTHM[307];
+RHYTHM[233] = { tz: 120, weekGapDays: 7, slots: FRI_MON_EU, midweek: MID_TW };
+for (const id of [255, 479]) RHYTHM[id] = RHYTHM[253];
+
 const DEFAULT_RHYTHM: Rhythm = {
   tz: TZ.tr,
   weekGapDays: 7,
@@ -844,17 +917,13 @@ export function planFromApiFixtures(
 
   planned.sort((a, b) => a.date.getTime() - b.date.getTime());
   if (!planned[0]) return null;
-  if (isUefaClubCup(leagueId)) {
-    const shift = alignUefaShift(planned[0].date, startAt);
-    for (const m of planned) m.date = snapToUefaMidweek(new Date(m.date.getTime() + shift));
-  } else {
-    stampRhythmDates(planned, leagueId, startAt, schedule);
-  }
+  // Yazılan başlangıç anı ilk maçın kickoff'u olur; aradaki gün/saat farkı korunur.
+  shiftMatchesToStart(planned, startAt);
   clampMatchesAfter(planned, startAt);
   return { matches: planned, source: "api", estimated: planned.filter((m) => m.estimated).length };
 }
 
-/** API yoksa: Berger + ligin tipik Cuma–Pazar ritmi (her güne maç basılmaz). */
+/** API yoksa: Berger. İlk maç start_at anında, aynı haftadakiler 2 saat arayla. */
 export function planFromRhythm(
   teamIds: number[],
   leagueId: number,
@@ -867,26 +936,21 @@ export function planFromRhythm(
   const rounds = cfg.double_round
     ? [...first, ...first.map((round) => round.map(([h, a]) => [a, h] as [number, number]))]
     : first;
-  const r = leagueRhythm(leagueId, schedule);
   const start = new Date(cfg.start_at);
   const matches: PlannedMatch[] = [];
   rounds.forEach((pairs, ri) => {
-    const week = new Date(start.getTime() + ri * r.weekGapDays * 86400_000);
+    const week = new Date(start.getTime() + ri * 7 * 86400_000);
     const shuffled = rng.shuffle(pairs);
-    const slots = applySlots(shuffled.length, week, r);
     shuffled.forEach(([home, away], i) => {
       matches.push({
-        round: ri + 1, home, away, date: slots[i],
+        round: ri + 1, home, away,
+        date: new Date(week.getTime() + i * 2 * 3600_000),
         roundLabel: `${ri + 1}. Hafta`,
         estimated: true,
       });
     });
   });
   matches.sort((a, b) => a.date.getTime() - b.date.getTime());
-  if (matches[0] && isUefaClubCup(leagueId)) {
-    const shift = alignUefaShift(matches[0].date, start);
-    for (const m of matches) m.date = snapToUefaMidweek(new Date(m.date.getTime() + shift));
-  }
   clampMatchesAfter(matches, start);
   return { matches, source: "rhythm", estimated: matches.length };
 }
@@ -906,12 +970,13 @@ function trMidnightUtc(day: string): number {
 
 /** Ligin TR'de doğal bandı (dakika, 0–1440). 24 saat dolsun diye esnek. */
 function preferredMinute(leagueId: number): number {
-  if (leagueId === 98 || leagueId === 292) return 9 * 60;
-  if (leagueId === 71 || leagueId === 128 || leagueId === 13) return 2 * 60 + 30;
-  if (leagueId === 253 || leagueId === 262) return 4 * 60;
-  if (leagueId === 307) return 18 * 60;
+  if (leagueId === 98 || leagueId === 99 || leagueId === 292 || leagueId === 293) return 9 * 60;
+  if (leagueId === 169 || leagueId === 296) return 14 * 60;
+  if (leagueId === 71 || leagueId === 72 || leagueId === 128 || leagueId === 129 || leagueId === 13 || leagueId === 265 || leagueId === 239 || leagueId === 242 || leagueId === 281 || leagueId === 268) return 2 * 60 + 30;
+  if (leagueId === 253 || leagueId === 262 || leagueId === 255 || leagueId === 479) return 4 * 60;
+  if (leagueId === 307 || leagueId === 305 || leagueId === 290 || leagueId === 233) return 18 * 60;
   if (leagueId === 2 || leagueId === 3 || leagueId === 848) return 21 * 60;
-  if (leagueId === 203 || leagueId === 204 || leagueId === 419) return 20 * 60;
+  if (leagueId === 203 || leagueId === 204 || leagueId === 205 || leagueId === 419) return 20 * 60;
   return 19 * 60;
 }
 
@@ -988,67 +1053,61 @@ export function spreadAroundClock(rows: ClockRow[], notBefore: Date): ClockRow[]
   return rows;
 }
 
-/** API eşleşmeleri kalsın, kickoff start_at'ten itibaren lig ritmiyle (Pzt/Salı boş kalmasın). */
-function stampRhythmDates(matches: PlannedMatch[], leagueId: number, startAt: Date, schedule?: LeagueSchedule | null): void {
-  const r = leagueRhythm(leagueId, schedule);
-  const groups = new Map<number, PlannedMatch[]>();
-  for (const m of matches) {
-    const arr = groups.get(m.round) ?? [];
-    arr.push(m);
-    groups.set(m.round, arr);
+/** İlk maçı startAt anına kaydır; maçlar arasındaki gün ve saat farkı aynı kalır. */
+export function shiftMatchesToStart(matches: PlannedMatch[], startAt: Date): PlannedMatch[] {
+  if (!matches.length) return matches;
+  let earliest = Infinity;
+  for (const m of matches) earliest = Math.min(earliest, m.date.getTime());
+  const delta = startAt.getTime() - earliest;
+  if (delta !== 0) {
+    for (const m of matches) m.date = new Date(m.date.getTime() + delta);
   }
-  const rounds = [...groups.keys()].sort((a, b) => a - b);
-  rounds.forEach((round, ri) => {
-    const g = groups.get(round)!;
-    g.sort((a, b) => a.date.getTime() - b.date.getTime());
-    const week = new Date(startAt.getTime() + ri * r.weekGapDays * 86400_000);
-    const slots = applySlots(g.length, week, r);
-    g.forEach((m, i) => { m.date = slots[i]!; });
-  });
   matches.sort((a, b) => a.date.getTime() - b.date.getTime());
+  return matches;
 }
 
-/** Haftanın erken günü startAt'ten önce kalmasın (Pazartesi start + Cmt maçı = dün). */
+/** startAt'ten önce kalan maçı aynı saatte bir sonraki haftaya al. Dakikayı yuvarlama. */
 export function clampMatchesAfter(matches: PlannedMatch[], startAt: Date): PlannedMatch[] {
   const floor = startAt.getTime();
   const WEEK = 7 * 86400_000;
   for (const m of matches) {
     let t = m.date.getTime();
     while (t < floor) t += WEEK;
-    m.date = snapKickoff(new Date(t), startAt);
+    m.date = new Date(t);
   }
   matches.sort((a, b) => a.date.getTime() - b.date.getTime());
   return matches;
 }
 
-/** Aktif ligde kalan NS maçları yeni gün/saat aralığına çek (hafta sırası korunur). */
+function isoDowTr(d: Date): number {
+  const dow = trParts(d).dow;
+  return dow === 0 ? 7 : dow;
+}
+
+/** Seçilen güne al. Saat aralığın içindeyse olduğu gibi kalır; değilse hour_from:00. */
+function placeOnSchedule(from: Date, schedule: LeagueSchedule, notBefore: Date): Date {
+  const p = trParts(from);
+  const inside = p.h >= schedule.hour_from && p.h <= schedule.hour_to;
+  const hour = inside ? p.h : schedule.hour_from;
+  const minute = inside ? p.mi : 0;
+  let d = atTr(p.y, p.mo, p.da, hour, minute);
+  const allowed = new Set(schedule.days);
+  for (let i = 0; i < 21; i++) {
+    if (allowed.has(isoDowTr(d)) && d.getTime() >= notBefore.getTime()) return d;
+    d = new Date(d.getTime() + 86400_000);
+  }
+  return d.getTime() >= notBefore.getTime() ? d : new Date(notBefore.getTime());
+}
+
+/** Kilitli olmayan NS maçları seçilen günlere alır. Saati ritim slotuna yaymaz. */
 export function restampRemainingByRound(
   rows: { id: number; date: Date; round: string }[],
   schedule: LeagueSchedule,
   notBefore: Date,
 ): { id: number; date: Date }[] {
-  const r = rhythmFromSchedule(schedule);
-  const floor = notBefore.getTime();
-  const groups = new Map<string, { id: number; date: Date; round: string }[]>();
-  for (const row of rows) {
-    const k = row.round || "?";
-    const arr = groups.get(k) ?? [];
-    arr.push(row);
-    groups.set(k, arr);
-  }
-  const out: { id: number; date: Date }[] = [];
-  const ordered = [...groups.entries()].sort((a, b) => {
-    const da = Math.min(...a[1].map((x) => x.date.getTime()));
-    const db = Math.min(...b[1].map((x) => x.date.getTime()));
-    return da - db;
-  });
-  for (const [, g] of ordered) {
-    g.sort((a, b) => a.date.getTime() - b.date.getTime() || a.id - b.id);
-    const week = new Date(Math.max(floor, g[0].date.getTime()));
-    const slots = applySlots(g.length, week, r);
-    g.forEach((m, i) => out.push({ id: m.id, date: snapKickoff(slots[i]!, notBefore) }));
-  }
-  return out;
+  return [...rows]
+    .sort((a, b) => a.date.getTime() - b.date.getTime() || a.id - b.id)
+    .map((m) => ({ id: m.id, date: placeOnSchedule(m.date, schedule, notBefore) }));
 }
 
 const MIN_REST_MS = 36 * 3600_000;
@@ -1091,7 +1150,7 @@ export function resolveTeamClashes(
   for (const m of out) {
     let t = opts?.uefa ? snapToUefaMidweek(m.date).getTime() : m.date.getTime();
     for (let i = 0; i < 16 && (clashes(m.home, t) || clashes(m.away, t)); i++) t = bump(t);
-    m.date = snapKickoff(new Date(t));
+    m.date = new Date(t);
     add(m.home, t);
     add(m.away, t);
   }

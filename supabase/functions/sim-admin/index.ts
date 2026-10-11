@@ -4,7 +4,7 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { ApiFootball, fetchSeasonFixtures } from "../_shared/api.ts";
 import { adminClient, apiKey, authorize, errMsg, json, log, upsertChunked } from "../_shared/db.ts";
-import { planFromApiFixtures, planFromRhythm, teamsFromFixtures, isCupLeague, isUefaClubCup, filterCupMainFixtures, resolveTeamClashes, clampMatchesAfter, spreadAroundClock, parseSchedule, restampRemainingByRound, defaultScheduleForLeague, snapKickoff, type CalendarResult } from "../_shared/sim/calendar.ts";
+import { planFromApiFixtures, planFromRhythm, teamsFromFixtures, isCupLeague, filterCupMainFixtures, resolveTeamClashes, clampMatchesAfter, parseSchedule, restampRemainingByRound, defaultScheduleForLeague, type CalendarResult } from "../_shared/sim/calendar.ts";
 import { buildSchedule, computeStandings, TEST_LEAGUE_ID, type ScheduleConfig, type TeamInfo } from "../_shared/sim/league.ts";
 import { matchClock } from "../_shared/sim/clock.ts";
 import { computeProbabilities, type LiveState, PRE_STATE, priceOdds } from "../_shared/sim/model.ts";
@@ -323,7 +323,6 @@ async function startLeagues(db: SupabaseClient, body: Record<string, unknown>) {
     }
   }
   for (const rest of deferred) failed.push({ id: rest.id, name: rest.name, error: "süre doldu" });
-  try { await rebalanceClock(db); } catch (e) { console.warn("clock", errMsg(e)); }
 
   const msg = `hepsi: ${started.length} başladı, ${skipped.length} atlandı, ${failed.length} bekliyor/hata`;
   try { await log(db, "sim-admin", failed.filter((f) => f.error !== "süre doldu").length === 0, msg, 0); } catch { /* log şart değil */ }
@@ -431,7 +430,7 @@ async function startLeague(db: SupabaseClient, body: Record<string, unknown>) {
     if (teamIdSet.has(f.away_team_id as number)) busy.push({ teamId: f.away_team_id as number, date: d });
   }
   if (busy.length) {
-    calendar.matches = resolveTeamClashes(calendar.matches, busy, { uefa: isUefaClubCup(leagueId) });
+    calendar.matches = resolveTeamClashes(calendar.matches, busy);
   }
   calendar.matches = clampMatchesAfter(calendar.matches, startAt);
   calendar.estimated = calendar.matches.filter((m) => m.estimated).length;
@@ -474,33 +473,6 @@ async function startLeague(db: SupabaseClient, body: Record<string, unknown>) {
     ok: true, teams: teams.length, fixtures: rows.length, rounds, archived, squads,
     config: cfg, calendar: calendar.source, estimated: calendar.estimated,
   };
-}
-
-async function rebalanceClock(db: SupabaseClient) {
-  const from = new Date(Date.now() + 20 * 60_000).toISOString();
-  const { data, error } = await db.from("fixtures")
-    .select("id, date, league_id, home_team_id, away_team_id, kickoff_locked")
-    .eq("archived", false).eq("is_sim", true).eq("status_short", "NS")
-    .eq("kickoff_locked", false)
-    .gte("date", from)
-    .order("date")
-    .limit(5000);
-  if (error) throw error;
-  const rows = (data ?? []).map((r) => ({
-    id: Number(r.id),
-    date: new Date(r.date as string),
-    league_id: Number(r.league_id),
-    home_team_id: Number(r.home_team_id),
-    away_team_id: Number(r.away_team_id),
-  }));
-  if (!rows.length) return 0;
-  spreadAroundClock(rows, new Date(from));
-  for (let i = 0; i < rows.length; i += 80) {
-    await Promise.all(rows.slice(i, i + 80).map((r) =>
-      db.from("fixtures").update({ date: r.date.toISOString() }).eq("id", r.id)
-    ));
-  }
-  return rows.length;
 }
 
 async function stopLeague(db: SupabaseClient, leagueId: number) {
@@ -980,7 +952,7 @@ function parseTrKickoff(raw: unknown): Date {
 async function setFixtureDate(db: SupabaseClient, body: Record<string, unknown>) {
   const fixtureId = Number(body.fixture_id);
   if (!fixtureId) throw new Error("fixture_id gerekli");
-  const date = snapKickoff(parseTrKickoff(body.date));
+  const date = parseTrKickoff(body.date);
   if (date.getTime() < Date.now() - 30_000) throw new Error("Tarih geçmiş olamaz");
   const { data: f, error } = await db.from("fixtures")
     .select("id, status_short, is_sim, archived, home_team_id, away_team_id")

@@ -54,6 +54,13 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="feed"
+        options={{
+          title: 'Akış',
+          tabBarIcon: ({ color, size }) => <Ionicons name="chatbubbles" size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
         name="standings"
         options={{
           title: 'Puan Durumu',

@@ -6,6 +6,8 @@ export interface Profile {
   username: string | null;
   balance: number;
   is_admin: boolean;
+  ban_permanent: boolean;
+  ban_until: string | null;
   created_at: string;
 }
 
@@ -131,6 +133,51 @@ export interface Bet {
   created_at: string;
   settled_at: string | null;
   bet_selections: BetSelection[];
+}
+
+export interface SharedPick {
+  fixture_id: number;
+  market: string;
+  selection: string;
+  line: number;
+  odd: number;
+  is_live: boolean;
+  home_name: string | null;
+  away_name: string | null;
+  league_name: string | null;
+  fixture_date: string | null;
+  status: BetStatus;
+  result_home: number | null;
+  result_away: number | null;
+  fixture_status: string | null;
+}
+
+export interface SharedComment {
+  id: string;
+  body: string;
+  created_at: string;
+  username: string;
+  mine: boolean;
+}
+
+export interface SharedCoupon {
+  id: string;
+  bet_id: string;
+  user_id: string;
+  username: string;
+  mine: boolean;
+  note: string | null;
+  show_stake: boolean;
+  stake: number | null;
+  total_odd: number;
+  potential_win: number | null;
+  status: BetStatus;
+  created_at: string;
+  like_count: number;
+  liked: boolean;
+  comment_count: number;
+  comments: SharedComment[];
+  selections: SharedPick[];
 }
 
 export interface Transaction {

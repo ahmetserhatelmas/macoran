@@ -316,6 +316,11 @@ export const ERROR_MESSAGES: Record<string, string> = {
   SELECTION_LOST: 'Kuponun bir ayağı kaybetti, bozdurulamaz.',
   BET_SETTLED: 'Bu kupon zaten sonuçlandı.',
   BET_NOT_FOUND: 'Kupon bulunamadı.',
+  ALREADY_SHARED: 'Bu kupon zaten akışta.',
+  NOTE_TOO_LONG: 'Not en fazla 160 karakter olabilir.',
+  COMMENT_EMPTY: 'Yorum boş olamaz.',
+  COMMENT_TOO_LONG: 'Yorum en fazla 200 karakter olabilir.',
+  NOT_FOUND: 'Paylaşım bulunamadı.',
   FIXTURE_CLOSED: 'Bu maç bahse kapalı.',
   ODD_NOT_FOUND: 'Oran artık mevcut değil.',
   ODD_SUSPENDED: 'Bu oran şu an askıda.',
@@ -324,6 +329,12 @@ export const ERROR_MESSAGES: Record<string, string> = {
   ADMIN_REQUIRED: 'Bu işlem için admin yetkisi gerekir.',
   INVALID_AMOUNT: 'Geçersiz tutar.',
   USER_NOT_FOUND: 'Kullanıcı bulunamadı.',
+  ACCOUNT_BANNED: 'Hesabınız banlanmıştır.',
+  CANNOT_BAN_SELF: 'Kendi hesabını banlayamazsın.',
+  CANNOT_BAN_ADMIN: 'Admin hesap banlanamaz.',
+  BAN_UNTIL_PAST: 'Ban bitişi gelecekte olmalı.',
+  BAN_TOO_LONG: 'Ban en fazla 2 yıl olabilir.',
+  INVALID_BAN: 'Geçersiz ban işlemi.',
 };
 
 export function humanizeError(message: string | undefined) {

@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Link } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Button, Input, Screen } from '@/components/ui';
@@ -9,10 +9,18 @@ import { useAuth } from '@/store/auth';
 
 export default function LoginScreen() {
   const signIn = useAuth((s) => s.signIn);
+  const notice = useAuth((s) => s.notice);
+  const clearNotice = useAuth((s) => s.clearNotice);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!notice) return;
+    setError(notice);
+    clearNotice();
+  }, [notice, clearNotice]);
 
   const submit = async () => {
     if (!email || !password) return setError('E-posta ve şifre gerekli.');

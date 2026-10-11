@@ -1,9 +1,9 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { Stack, useRouter } from 'expo-router';
 import * as Notifications from 'expo-notifications';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { AppState, InteractionManager, Platform } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -30,7 +30,16 @@ function RealtimeBridge() {
 function PushBridge() {
   const session = useAuth((s) => s.session);
   const router = useRouter();
+  const qc = useQueryClient();
   const seen = useRef<string | null>(null);
+
+  const refreshMatchAndBets = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ['fixtures'] });
+    qc.invalidateQueries({ queryKey: ['fixture'] });
+    qc.invalidateQueries({ queryKey: ['fixture-detail'] });
+    qc.invalidateQueries({ queryKey: ['bets'] });
+    qc.invalidateQueries({ queryKey: ['notifications'] });
+  }, [qc]);
 
   useEffect(() => {
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -62,14 +71,16 @@ function PushBridge() {
       if (state === 'active' && session) {
         void registerPushToken();
         void useFavorites.getState().syncWithServer();
+        refreshMatchAndBets();
       }
     });
     return () => sub.remove();
-  }, [session]);
+  }, [session, refreshMatchAndBets]);
 
   useEffect(() => {
     if (!session) return;
     const go = (data: PushPayload | Record<string, unknown> | undefined) => {
+      refreshMatchAndBets();
       const path = routeFromPush(data as PushPayload);
       if (path) router.push(path as '/notifications');
     };
@@ -84,7 +95,7 @@ function PushBridge() {
       go(last.notification.request.content.data);
     });
     return () => sub.remove();
-  }, [router, session]);
+  }, [router, session, refreshMatchAndBets]);
 
   return null;
 }

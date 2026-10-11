@@ -6,13 +6,128 @@ import { Alert, KeyboardAvoidingView, Pressable, ScrollView, StyleSheet, Text, V
 
 import { BetCard } from '@/components/BetCard';
 import { Badge, Button, Card, Header, IconButton, Input, Loading, Muted, Screen, SectionTitle } from '@/components/ui';
+import { banActive, banStatusLabel } from '@/lib/ban';
 import { dateTime, money } from '@/lib/format';
 import { humanizeError } from '@/lib/markets';
 import { useAdminUser } from '@/lib/queries';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing } from '@/lib/theme';
+import type { Profile } from '@/types/db';
 
 const QUICK = [100, 500, 1000, 5000, 10000];
+const BAN_HOURS = [
+  { label: '1 saat', hours: 1 },
+  { label: '1 gün', hours: 24 },
+  { label: '7 gün', hours: 24 * 7 },
+  { label: '30 gün', hours: 24 * 30 },
+];
+
+function BanCard({
+  userId,
+  profile,
+  onDone,
+}: {
+  userId: string;
+  profile: Profile;
+  onDone: () => void;
+}) {
+  const [hours, setHours] = useState('24');
+  const [busy, setBusy] = useState<'temporary' | 'permanent' | 'clear' | null>(null);
+  const active = banActive(profile);
+  const status = banStatusLabel(profile);
+
+  const run = async (mode: 'temporary' | 'permanent' | 'clear', until?: string) => {
+    setBusy(mode);
+    const { error } = await supabase.rpc('admin_set_ban', {
+      p_user_id: userId,
+      p_mode: mode,
+      p_until: until ?? null,
+    });
+    setBusy(null);
+    if (error) return Alert.alert('Hata', humanizeError(error.message));
+    onDone();
+  };
+
+  const askTemp = (h: number) => {
+    if (!Number.isFinite(h) || h < 1 || h > 24 * 365) {
+      return Alert.alert('Hata', '1 ile 8760 saat arasında bir süre girin.');
+    }
+    const until = new Date(Date.now() + Math.round(h) * 3600_000).toISOString();
+    Alert.alert(
+      active ? 'Ban süresini değiştir' : 'Süreli ban',
+      `${profile.username ?? profile.email} hesabı ${dateTime(until)} tarihine kadar banlı kalsın mı?`,
+      [
+        { text: 'Vazgeç', style: 'cancel' },
+        { text: active ? 'Güncelle' : 'Banla', style: 'destructive', onPress: () => run('temporary', until) },
+      ],
+    );
+  };
+
+  return (
+    <Card style={{ gap: spacing.md }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={styles.cardTitle}>Hesap banı</Text>
+        {active ? <Badge text="BANLI" color="rgba(239,68,68,0.15)" textColor={colors.danger} /> : <Badge text="AÇIK" color="rgba(34,197,94,0.15)" textColor={colors.success} />}
+      </View>
+      <Muted style={{ fontSize: 12 }}>
+        {status ?? 'Ban yok. Süreli ban bitince hesap kendiliğinden açılır.'}
+      </Muted>
+      {profile.is_admin ? (
+        <Muted style={{ fontSize: 12 }}>Admin hesap banlanamaz.</Muted>
+      ) : (
+        <>
+          <View style={styles.quick}>
+            {BAN_HOURS.map((p) => (
+              <Pressable key={p.label} onPress={() => askTemp(p.hours)} style={styles.quickBtn}>
+                <Text style={styles.quickText}>{p.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <Input
+            label="Özel süre (saat)"
+            keyboardType="number-pad"
+            value={hours}
+            onChangeText={(v) => setHours(v.replace(/[^\d]/g, ''))}
+            icon="time-outline"
+          />
+          <Button
+            title={active && !profile.ban_permanent ? 'Süreyi değiştir' : 'Süreli banla'}
+            icon="hourglass-outline"
+            variant="secondary"
+            loading={busy === 'temporary'}
+            onPress={() => askTemp(Number(hours))}
+          />
+          <Button
+            title="Kalıcı ban"
+            icon="ban"
+            variant="danger"
+            loading={busy === 'permanent'}
+            onPress={() =>
+              Alert.alert('Kalıcı ban', `${profile.username ?? profile.email} kalıcı olarak banlansın mı?`, [
+                { text: 'Vazgeç', style: 'cancel' },
+                { text: 'Banla', style: 'destructive', onPress: () => run('permanent') },
+              ])
+            }
+          />
+          {status ? (
+            <Button
+              title="Banı kaldır"
+              icon="lock-open-outline"
+              variant="ghost"
+              loading={busy === 'clear'}
+              onPress={() =>
+                Alert.alert('Banı kaldır', `${profile.username ?? profile.email} tekrar giriş yapabilsin mi?`, [
+                  { text: 'Vazgeç', style: 'cancel' },
+                  { text: 'Kaldır', onPress: () => run('clear') },
+                ])
+              }
+            />
+          ) : null}
+        </>
+      )}
+    </Card>
+  );
+}
 
 /** Input'a yazılacak bakiye metni (kuruş varsa 2 hane). */
 function amountFromBalance(balance: number) {
@@ -90,9 +205,16 @@ export default function AdminUserScreen() {
               </View>
               <View style={{ alignItems: 'flex-end', gap: 4 }}>
                 {profile.is_admin ? <Badge text="ADMIN" color="rgba(251,191,36,0.15)" textColor={colors.gold} /> : null}
+                {banActive(profile) ? <Badge text="BAN" color="rgba(239,68,68,0.15)" textColor={colors.danger} /> : null}
                 <Muted style={{ fontSize: 11 }}>Kayıt: {dateTime(profile.created_at)}</Muted>
               </View>
             </Card>
+
+            <BanCard
+              userId={userId}
+              profile={profile}
+              onDone={() => qc.invalidateQueries({ queryKey: ['admin'] })}
+            />
 
             <Card style={{ gap: spacing.md }}>
               <Text style={styles.cardTitle}>Sanal Para İşlemi</Text>

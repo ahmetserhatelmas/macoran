@@ -7,7 +7,7 @@ import { BetCard } from '@/components/BetCard';
 import { NotificationBell } from '@/components/NotificationBell';
 import { Button, EmptyState, Header, Loading, Screen } from '@/components/ui';
 import { money } from '@/lib/format';
-import { useMyBets } from '@/lib/queries';
+import { useMyBets, useMySharedBetIds } from '@/lib/queries';
 import { colors, radius, spacing } from '@/lib/theme';
 import { useBetslip } from '@/store/betslip';
 
@@ -23,6 +23,7 @@ const FILTER_LABELS: Record<Filter, string> = {
 export default function BetsScreen() {
   const router = useRouter();
   const { data: bets, isLoading, refetch, isRefetching } = useMyBets();
+  const { data: sharedIds } = useMySharedBetIds();
   const count = useBetslip((s) => s.selections.length);
   const [filter, setFilter] = useState<Filter>('all');
 
@@ -104,7 +105,7 @@ export default function BetsScreen() {
         <FlatList
           data={list}
           keyExtractor={(b) => b.id}
-          renderItem={({ item }) => <BetCard bet={item} />}
+          renderItem={({ item }) => <BetCard bet={item} shared={sharedIds?.has(item.id) ?? false} />}
           contentContainerStyle={{ paddingBottom: 40, paddingTop: spacing.sm }}
           refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={colors.primary} />}
           ListEmptyComponent={<EmptyState icon="receipt-outline" title="Henüz kupon yok" subtitle="Maçlar sekmesinden oran seçip ilk kuponunu oyna." />}

@@ -1,6 +1,7 @@
 import type { RealtimeChannel, Session } from '@supabase/supabase-js';
 import { create } from 'zustand';
 
+import { banActive, banMessage } from '@/lib/ban';
 import { supabase } from '@/lib/supabase';
 import { unregisterPushToken } from '@/lib/push';
 import type { Profile } from '@/types/db';
@@ -8,8 +9,11 @@ import type { Profile } from '@/types/db';
 interface AuthState {
   session: Session | null;
   profile: Profile | null;
+  /** Giriş ekranında gösterilir (banlı hesap oturumdan düşünce). */
+  notice: string | null;
   initialized: boolean;
   init: () => void;
+  clearNotice: () => void;
   refreshProfile: () => Promise<void>;
   signIn: (email: string, password: string) => Promise<string | null>;
   signUp: (email: string, password: string, username: string) => Promise<string | null>;
@@ -18,14 +22,30 @@ interface AuthState {
 
 let profileChannel: RealtimeChannel | null = null;
 
-function subscribeProfile(userId: string, set: (p: Partial<AuthState>) => void) {
+function asProfile(row: Profile): Profile {
+  return { ...row, balance: Number(row.balance) };
+}
+
+function subscribeProfile(
+  userId: string,
+  set: (p: Partial<AuthState>) => void,
+  get: () => AuthState,
+) {
   profileChannel?.unsubscribe();
   profileChannel = supabase
     .channel(`profile:${userId}`)
     .on(
       'postgres_changes',
       { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `id=eq.${userId}` },
-      (payload) => set({ profile: payload.new as Profile })
+      (payload) => {
+        const profile = asProfile(payload.new as Profile);
+        if (banActive(profile)) {
+          set({ notice: banMessage(profile) });
+          void get().signOut();
+          return;
+        }
+        set({ profile });
+      },
     )
     .subscribe();
 }
@@ -33,14 +53,17 @@ function subscribeProfile(userId: string, set: (p: Partial<AuthState>) => void) 
 export const useAuth = create<AuthState>((set, get) => ({
   session: null,
   profile: null,
+  notice: null,
   initialized: false,
+
+  clearNotice: () => set({ notice: null }),
 
   init: () => {
     supabase.auth.getSession().then(async ({ data }) => {
       set({ session: data.session });
       if (data.session) {
         await get().refreshProfile();
-        subscribeProfile(data.session.user.id, set);
+        subscribeProfile(data.session.user.id, set, get);
       }
       set({ initialized: true });
     });
@@ -49,7 +72,7 @@ export const useAuth = create<AuthState>((set, get) => ({
       set({ session });
       if (session) {
         await get().refreshProfile();
-        subscribeProfile(session.user.id, set);
+        subscribeProfile(session.user.id, set, get);
       } else {
         profileChannel?.unsubscribe();
         profileChannel = null;
@@ -62,12 +85,29 @@ export const useAuth = create<AuthState>((set, get) => ({
     const uid = get().session?.user.id;
     if (!uid) return;
     const { data } = await supabase.from('profiles').select('*').eq('id', uid).single();
-    if (data) set({ profile: { ...data, balance: Number(data.balance) } as Profile });
+    if (!data) return;
+    const profile = asProfile(data as Profile);
+    if (banActive(profile)) {
+      set({ notice: banMessage(profile) });
+      await get().signOut();
+      return;
+    }
+    set({ profile });
   },
 
   signIn: async (email, password) => {
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-    return error ? translateAuthError(error.message) : null;
+    const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    if (error) return translateAuthError(error.message);
+    const uid = data.user?.id;
+    if (!uid) return null;
+    const { data: row } = await supabase.from('profiles').select('*').eq('id', uid).single();
+    if (row && banActive(row as Profile)) {
+      const msg = banMessage(row as Profile);
+      set({ notice: msg });
+      await supabase.auth.signOut();
+      return msg;
+    }
+    return null;
   },
 
   signUp: async (email, password, username) => {

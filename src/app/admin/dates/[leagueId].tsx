@@ -88,7 +88,7 @@ export default function FixtureDatesScreen() {
           ListHeaderComponent={
             <View style={{ gap: spacing.sm, marginBottom: spacing.sm }}>
               <Muted style={{ fontSize: 12 }}>
-                Bir maça dokunup gün ve saati yazın (Türkiye saati). Bu saat kilitlenir; lig programı onu geri almaz. Sağdaki simge oran ve istatistik içindir.
+                Bir maça dokunup gün ve saati yazın (Türkiye saati). 15:07 yazılırsa maç 15:07'de başlar. Bu saat kilitlenir; lig programı onu geri almaz.
               </Muted>
               <Input placeholder="Takım veya hafta ara" value={q} onChangeText={setQ} icon="search" />
             </View>

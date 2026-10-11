@@ -643,7 +643,7 @@ function ScheduleForm({
     <View style={styles.modal}>
       <Text style={styles.modalTitle}>{league.name}</Text>
       <Muted style={{ fontSize: 12 }}>
-        Maç günleri ve kickoff aralığı (Türkiye saati). Lig açıksa başlamamış maçlar buna göre kayar.
+        Maç günleri ve saat aralığı (Türkiye saati). Kilitli olmayan maçlar seçilen güne alınır. Saat aralığın içindeyse dakika değişmez; dışındaysa başlangıç saatine çekilir.
       </Muted>
       <Text style={styles.fieldLabel}>Günler</Text>
       <View style={styles.dayRow}>
@@ -805,8 +805,8 @@ function StartLeagueForm({
       <Text style={styles.modalTitle}>{title}</Text>
       <Muted style={{ fontSize: 12 }}>
         {all
-          ? "Her lig bu sezonun gerçek fikstürünü (eşleşmeler) alır; gün/saat lig ritmine göre yayılır: Avrupa ligleri öğleden sonra–akşam, Brezilya/MLS gece, Japonya gündüz. UEFA kulüp kupaları hafta sonuna kilitlenir. Kadrolar API-Football'dan çekilir."
-          : "Bu sezonun gerçek fikstürü kullanılır (kim kiminle, hangi gün/saat). İlk hafta aşağıdaki tarihe kaydırılır; 10. hafta gibi günü net olmayan maçlar ligin tipik günlerine göre yerleştirilir."}
+          ? "Her lig bu sezonun gerçek fikstürünü alır. İlk maç aşağıdaki gün ve saatte başlar; sonraki maçlar aradaki farkı korur. Kadrolar API-Football'dan çekilir."
+          : "Bu sezonun gerçek fikstürü kullanılır (kim kiminle). İlk maç yazdığınız gün ve saatte başlar. Sonraki maçlar kendi aralarındaki gün ve saat farkını korur."}
       </Muted>
       <Input
         label="Sezon başlangıcı (YYYY-AA-GG SS:DD)"
@@ -868,9 +868,8 @@ function StartLeagueForm({
         </>
       ) : (
         <Muted style={{ fontSize: 12 }}>
-          Süper Lig, 1. Lig, Championship, Ligue 2 gibi ligler Pazartesi–
-          Salı dahil her gün dolar; saatler akşama yayılır. UEFA kupaları
-          hafta sonu. Başlatınca ilk maçlar bugünden (şimdiden sonra) yazılır.
+          İlk maç bu dakikada başlar. Örneğin 15:07 yazılırsa ilk maç 15:07'de
+          açılır; saat 15:00'e yuvarlanmaz.
         </Muted>
       )}
       <View style={{ flexDirection: "row", gap: spacing.sm }}>

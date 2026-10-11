@@ -5,7 +5,7 @@ import { dayjs } from '@/lib/format';
 import { LIVE_STATUSES } from '@/lib/markets';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/store/auth';
-import type { AppNotification, Bet, FixtureWithRelations, League, Profile, Standings, Team, Transaction } from '@/types/db';
+import type { AppNotification, Bet, FixtureWithRelations, League, Profile, SharedCoupon, Standings, Team, Transaction } from '@/types/db';
 
 const FIXTURE_SELECT = `*, elapsed_extra, home:teams!home_team_id(*), away:teams!away_team_id(*), league:leagues(*), odds(*)`;
 
@@ -418,6 +418,49 @@ export function useMyBets() {
     },
     enabled: !!uid,
     refetchInterval: 30_000,
+  });
+}
+
+export type CouponFeedFilter = 'latest' | 'hot' | 'mine';
+
+function normalizeShared(raw: SharedCoupon): SharedCoupon {
+  return {
+    ...raw,
+    stake: raw.stake === null || raw.stake === undefined ? null : Number(raw.stake),
+    total_odd: Number(raw.total_odd),
+    potential_win: raw.potential_win === null || raw.potential_win === undefined ? null : Number(raw.potential_win),
+    like_count: Number(raw.like_count),
+    comment_count: Number(raw.comment_count),
+    comments: raw.comments ?? [],
+    selections: (raw.selections ?? []).map((s) => ({ ...s, odd: Number(s.odd), line: Number(s.line), fixture_id: Number(s.fixture_id) })),
+  };
+}
+
+export function useCouponFeed(filter: CouponFeedFilter) {
+  const uid = useAuth((s) => s.session?.user.id);
+  return useQuery({
+    queryKey: ['coupon-feed', filter, uid],
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc('coupon_feed', { p_filter: filter, p_limit: 40 });
+      if (error) throw error;
+      const rows = (Array.isArray(data) ? data : []) as SharedCoupon[];
+      return rows.map(normalizeShared);
+    },
+    enabled: !!uid,
+    refetchInterval: 20_000,
+  });
+}
+
+export function useMySharedBetIds() {
+  const uid = useAuth((s) => s.session?.user.id);
+  return useQuery({
+    queryKey: ['shared-bets', uid],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('shared_coupons').select('bet_id').eq('user_id', uid!);
+      if (error) throw error;
+      return new Set((data ?? []).map((r) => r.bet_id as string));
+    },
+    enabled: !!uid,
   });
 }
 

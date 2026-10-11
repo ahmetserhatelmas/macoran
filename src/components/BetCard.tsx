@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { ShareCouponButton } from '@/components/ShareCouponButton';
 import { Badge } from '@/components/ui';
 import { dateTime, money, odd as fmtOdd } from '@/lib/format';
 import { humanizeError, marketTitle, selectionLabel } from '@/lib/markets';
@@ -20,7 +21,7 @@ export const STATUS_META: Record<BetStatus, { label: string; color: string; bg: 
   cashed: { label: 'Bozduruldu', color: colors.info, bg: 'rgba(56,189,248,0.15)', icon: 'cash-outline' },
 };
 
-export function BetCard({ bet }: { bet: Bet }) {
+export function BetCard({ bet, shared = false }: { bet: Bet; shared?: boolean }) {
   const router = useRouter();
   const qc = useQueryClient();
   const refreshProfile = useAuth((s) => s.refreshProfile);
@@ -111,6 +112,7 @@ export function BetCard({ bet }: { bet: Bet }) {
           <Stat label="Ödeme" value={money(bet.payout ?? 0)} highlight={bet.status === 'won' || bet.status === 'cashed'} />
         )}
       </View>
+      {uid === bet.user_id ? <ShareCouponButton betId={bet.id} shared={shared} /> : null}
       {canCash ? (
         <Pressable
           onPress={cashOut}

@@ -78,9 +78,13 @@ function currentSide(lu: TeamLineup, events: FixtureEvent[]) {
         onIds.delete(slots[idx].player.id);
         onIds.add(inn.id);
         const slotPos = slots[idx].player.position;
-        const position = slotPos === 'GK' && inn.position !== 'GK' ? inn.position : slotPos;
+        const incomingGk = inn.position === 'GK';
+        const position = slotPos === 'GK' ? (incomingGk ? 'GK' : inn.position) : incomingGk ? slotPos : inn.position;
+        const slotGrid = slots[idx].player.grid;
+        const g = parseGrid(position === 'GK' ? '1:1' : slotGrid);
+        const grid = position === 'GK' ? '1:1' : g && g.row > 1 ? slotGrid : null;
         slots[idx] = {
-          player: { ...inn, grid: slotPos === 'GK' && inn.position !== 'GK' ? null : (slots[idx].player.grid ?? inn.grid ?? null), position },
+          player: { ...inn, grid, position },
           cameOn: true,
           sentOff: false,
         };
@@ -93,7 +97,21 @@ function currentSide(lu: TeamLineup, events: FixtureEvent[]) {
   }
 
   const bench = lu.bench.filter((p) => !onIds.has(p.id));
-  return { slots, subs, bench };
+  return { slots: oneKeeper(slots), subs, bench };
+}
+
+/** Kalede yalnızca tek gerçek kaleci. Defans 1. sıraya oturup KL görünmesin. */
+function oneKeeper(slots: Slot[]): Slot[] {
+  const keeperAt = slots.findIndex((s) => s.player.position === 'GK');
+  return slots.map((s, i) => {
+    const g = parseGrid(s.player.grid);
+    if (i === keeperAt) return { ...s, player: { ...s.player, position: 'GK', grid: '1:1' } };
+    if (s.player.position === 'GK') {
+      return { ...s, player: { ...s.player, position: 'DEF', grid: g && g.row > 1 ? s.player.grid : '2:2' } };
+    }
+    if (g && g.row <= 1) return { ...s, player: { ...s.player, grid: '2:2' } };
+    return s;
+  });
 }
 
 function parseGrid(g?: string | null): { row: number; col: number } | null {

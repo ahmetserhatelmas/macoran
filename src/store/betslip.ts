@@ -23,6 +23,8 @@ interface BetslipState {
   selections: BetslipSelection[];
   stake: string;
   toggle: (sel: BetslipSelection) => void;
+  /** Paylaşılan kuponu ekler. Aynı maçtaki eski seçimin yerine geçer. */
+  addMany: (sels: BetslipSelection[]) => number;
   remove: (fixtureId: number) => void;
   clear: () => void;
   setStake: (s: string) => void;
@@ -57,6 +59,24 @@ export const useBetslip = create<BetslipState>()(
         const withoutFixture = list.filter((s) => s.fixture_id !== sel.fixture_id);
         if (withoutFixture.length >= MAX_SELECTIONS) return;
         set({ selections: [...withoutFixture, { ...sel, changed: false }] });
+      },
+
+      addMany: (sels) => {
+        let list = [...get().selections];
+        let added = 0;
+        for (const sel of sels) {
+          const idx = list.findIndex((s) => s.fixture_id === sel.fixture_id);
+          if (idx >= 0) {
+            list[idx] = { ...sel, changed: false };
+            added++;
+            continue;
+          }
+          if (list.length >= MAX_SELECTIONS) continue;
+          list.push({ ...sel, changed: false });
+          added++;
+        }
+        set({ selections: list });
+        return added;
       },
 
       remove: (fixtureId) => set({ selections: get().selections.filter((s) => s.fixture_id !== fixtureId) }),

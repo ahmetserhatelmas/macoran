@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 
 import { Badge, EmptyState, Header, IconButton, Input, Muted, Screen } from '@/components/ui';
+import { banActive } from '@/lib/ban';
 import { ago, dayjs, money } from '@/lib/format';
 import { useAdminStats, useAdminUsers } from '@/lib/queries';
 import { colors, radius, spacing } from '@/lib/theme';
@@ -101,6 +102,9 @@ export default function AdminScreen() {
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                 <Text style={styles.username}>{u.username ?? '-'}</Text>
                 {u.is_admin ? <Badge text="ADMIN" color="rgba(251,191,36,0.15)" textColor={colors.gold} /> : null}
+                {banActive(u) ? (
+                  <Badge text={u.ban_permanent ? 'BAN' : 'SÜRELİ'} color="rgba(239,68,68,0.15)" textColor={colors.danger} />
+                ) : null}
               </View>
               <Muted style={{ fontSize: 12 }}>{u.email}</Muted>
             </View>

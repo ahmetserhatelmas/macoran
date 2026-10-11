@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { EmptyState, Muted } from '@/components/ui';
+import { narrateMatchEvent } from '@/lib/narration';
 import type { FixtureEvent } from '@/lib/queries';
 import { colors, radius, spacing } from '@/lib/theme';
 
@@ -58,108 +59,6 @@ function minute(e: FixtureEvent) {
   return e.time.extra ? `${e.time.elapsed}+${e.time.extra}'` : `${e.time.elapsed}'`;
 }
 
-/** Olayı Türkçe tek cümleye çevirir (metin anlatım). */
-export function narrate(e: FixtureEvent, kind: Kind, score?: string): string {
-  const p = e.player?.name ?? 'Oyuncu';
-  const a = e.assist?.name;
-  const team = e.team.name;
-  // Simülasyon motoru gol/penaltı yorumlarını Türkçe yazar (ör. "Kafa golü")
-  const note = e.comments && /[çğıöşüÇĞİÖŞÜ]|golü|vuruş|mesafe|kontratak|karambol|kaleci|direk/i.test(e.comments) ? ` ${e.comments}.` : '';
-  switch (kind) {
-    case 'goal':
-      return `GOL! ${p} ${team} adına ağları buluyor${a ? ` (asist: ${a})` : ''}.${note}${score ? ` Skor ${score}.` : ''}`;
-    case 'pen':
-      return `GOL! ${p} penaltıyı gole çeviriyor, ${team} skoru değiştiriyor.${score ? ` Skor ${score}.` : ''}`;
-    case 'penaward':
-      return `PENALTI! ${p !== 'Oyuncu' ? `${p} (${team})` : team} penaltı kazandı. Atış bekleniyor.`;
-    case 'own':
-      return `Kendi kalesine gol! ${p} (${team}) topu kendi ağlarına gönderiyor.${score ? ` Skor ${score}.` : ''}`;
-    case 'missed':
-      return `Penaltı kaçtı! ${p} (${team}) penaltıdan yararlanamıyor.${note}`;
-    case 'injury':
-      return `Sakatlık: ${p} (${team}) sakatlandı, oyuna devam edemiyor.`;
-    case 'yellow':
-      return `Sarı kart: ${p} (${team})${e.comments ? ` — ${translateComment(e.comments)}` : ''}.`;
-    case 'red':
-      return e.detail?.toLowerCase().includes('second') || e.comments?.toLowerCase().includes('second')
-        ? `İkinci sarıdan kırmızı kart! ${p} (${team}) oyun dışı.`
-        : `Kırmızı kart! ${p} (${team}) oyundan atılıyor${e.comments ? ` — ${translateComment(e.comments)}` : ''}.`;
-    case 'sub':
-      // API-Football: player = çıkan, assist = giren
-      return a ? `Oyuncu değişikliği (${team}): ${p} çıkıyor, ${a} giriyor.` : `Oyuncu değişikliği (${team}): ${p} oyundan çıkıyor.`;
-    case 'var':
-      return `VAR incelemesi: ${translateVar(e.detail)}${p !== 'Oyuncu' ? ` (${p}, ${team})` : ` (${team})`}.`;
-    case 'woodwork':
-      return e.comments ? `${e.comments}.` : `Direkten döndü! ${p} (${team}) şutu direğe çarpıyor.`;
-    case 'chance':
-      return e.comments
-        ? `${e.comments}.`
-        : `Büyük fırsat! ${p} (${team}) gole çeviremiyor.`;
-    case 'save':
-      return e.comments
-        ? `${e.comments}.`
-        : `Kaleci kurtardı! ${p} (${team}) tehlikeli vuruyor.`;
-    case 'attack':
-      return e.comments
-        ? `${e.comments}.`
-        : `Tehlikeli atak: ${p} (${team}) ceza sahasına iniyor, savunma son anda müdahale ediyor.`;
-    case 'stoppage':
-      return e.comments ? `${e.comments}.` : `Hakem uzatma gösterdi.`;
-    case 'corner':
-      return e.comments ? `${e.comments}.` : `Korner: ${p !== 'Oyuncu' ? p : team} köşe vuruşu kazandı.`;
-    case 'foul':
-      return e.comments ? `${e.comments}.` : `Faul: ${p} (${team}) rakibini düşürüyor.`;
-    case 'throwin':
-      return e.comments ? `${e.comments}.` : `Taç: ${p !== 'Oyuncu' ? p : team} oyunu kenardan başlatıyor.`;
-    case 'offside':
-      return e.comments ? `${e.comments}.` : `Ofsayt: ${p} (${team}) erken harekete geçiyor.`;
-    case 'goalkick':
-      return e.comments ? `${e.comments}.` : `Kaleci vuruşu: ${p !== 'Oyuncu' ? p : team} oyunu başlatıyor.`;
-    default:
-      return `${e.detail} — ${p} (${team})`;
-  }
-}
-
-function translateComment(c: string) {
-  const m: Record<string, string> = {
-    foul: 'faul',
-    faul: 'faul',
-    'sert müdahale': 'sert müdahale',
-    itiraz: 'itiraz',
-    'zaman geçirme': 'zaman geçirme',
-    'taktik faul': 'taktik faul',
-    'sert faul': 'sert faul',
-    'i̇kinci sarı kart': 'ikinci sarı kart',
-    'time wasting': 'zaman geçirme',
-    argument: 'itiraz',
-    'violent conduct': 'şiddetli hareket',
-    'professional foul': 'profesyonel faul',
-    'unsportsmanlike behaviour': 'sportmenlik dışı davranış',
-    'handball': 'elle oynama',
-    'simulation': 'simülasyon',
-    'dangerous play': 'tehlikeli hareket',
-    'off the ball foul': 'top dışı faul',
-    'persistent fouling': 'sürekli faul',
-  };
-  return m[c.toLowerCase()] ?? c;
-}
-
-function translateVar(d: string) {
-  const m: Record<string, string> = {
-    'goal cancelled': 'Gol iptal edildi',
-    'goal confirmed': 'Gol onaylandı',
-    'penalty awarded': 'Penaltı verildi',
-    'penalty confirmed': 'Penaltı onaylandı',
-    'penalty cancelled': 'Penaltı iptal edildi',
-    'card upgrade': 'Kart kırmızıya çevrildi',
-    'card cancelled': 'Kart iptal edildi',
-    'red card cancelled': 'Kırmızı kart iptal edildi',
-    'goal disallowed - offside': 'Gol iptal — ofsayt',
-    'goal disallowed - handball': 'Gol iptal — elle oynama',
-    'goal disallowed - foul': 'Gol iptal — faul',
-  };
-  return m[d.toLowerCase()] ?? d;
-}
 
 const ICON: Record<Kind, { name: React.ComponentProps<typeof Ionicons>['name']; color: string }> = {
   goal: { name: 'football', color: colors.success },
@@ -200,16 +99,18 @@ export function MatchTimeline({ events, homeId, homeName, awayName, homeGoals, a
   const sorted = [...events].sort((x, y) => x.time.elapsed - y.time.elapsed || (x.time.extra ?? 0) - (y.time.extra ?? 0));
   let h = 0;
   let a = 0;
+  const used = new Set<string>();
   const items = sorted.map((e, i) => {
     const kind = classify(e);
     let score: string | undefined;
+    const scoringHome = kind === 'own' ? e.team.id !== homeId : e.team.id === homeId;
     if (kind === 'goal' || kind === 'pen' || kind === 'own') {
-      const scoringHome = kind === 'own' ? e.team.id !== homeId : e.team.id === homeId;
       if (scoringHome) h++;
       else a++;
       score = `${h}-${a}`;
     }
-    return { key: `${i}-${e.time.elapsed}-${e.type}`, e, kind, score, home: e.team.id === homeId };
+    const text = narrateMatchEvent(e, kind, score, scoringHome, used);
+    return { key: `${i}-${e.time.elapsed}-${e.type}`, e, kind, text, home: e.team.id === homeId };
   });
 
   // En yeni üstte
@@ -229,7 +130,7 @@ export function MatchTimeline({ events, homeId, homeName, awayName, homeGoals, a
         </Card>
       ) : null}
 
-      {items.map(({ key, e, kind, score, home }) => {
+      {items.map(({ key, e, kind, text, home }) => {
         const icon = ICON[kind];
         const highlight = kind === 'goal' || kind === 'pen' || kind === 'penaward' || kind === 'own' || kind === 'red' || kind === 'woodwork' || kind === 'chance';
         return (
@@ -243,7 +144,7 @@ export function MatchTimeline({ events, homeId, homeName, awayName, homeGoals, a
                 <View style={[styles.sideDot, { backgroundColor: home ? colors.primary : colors.info }]} />
                 <Muted style={{ fontSize: 11 }}>{home ? homeName : awayName}</Muted>
               </View>
-              <Text style={styles.text}>{narrate(e, kind, score)}</Text>
+              <Text style={styles.text}>{text}</Text>
             </View>
           </View>
         );

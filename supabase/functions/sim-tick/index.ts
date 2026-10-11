@@ -330,19 +330,6 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
     console.error(`details ${f.id}: ${errMsg(e)}`);
   }
 
-  const newly = full.events.slice(sm.revealed, revealCount);
-  const home = teams.get(f.home_team_id)?.name ?? "Ev";
-  const away = teams.get(f.away_team_id)?.name ?? "Dep";
-  // Satır hemen yazılır ama deliver_at yüzünden push ve liste skordan sonra gelir.
-  // Sonuçlandırma henüz pending seçimleri görsün diye bildirim, settle'dan önce eklenir.
-  for (const e of newly) {
-    const note = matchAlert(e, home, away, `${homeGoals}-${awayGoals}`);
-    if (note) await notifyFollowers(db, f.id, note.type, note.title, note.body);
-  }
-  if (becameHT) {
-    await notifyFollowers(db, f.id, "ht", "Devre arası", `${home} ${snap.h1}-${snap.a1} ${away}`);
-  }
-
   if (!isSuspended && reprice && !f.odds_locked) {
     try {
       const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(league), f.league_id);
@@ -372,6 +359,18 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
     } catch (e) {
       console.error(`settle ${f.id}: ${errMsg(e)}`);
     }
+  }
+
+  // Skor ve kupon satırı yazıldıktan sonra haber ver. deliver_at, listenin yenilenmesini bekler.
+  const newly = full.events.slice(sm.revealed, revealCount);
+  const home = teams.get(f.home_team_id)?.name ?? "Ev";
+  const away = teams.get(f.away_team_id)?.name ?? "Dep";
+  for (const e of newly) {
+    const note = matchAlert(e, home, away, `${homeGoals}-${awayGoals}`);
+    if (note) await notifyFollowers(db, f.id, note.type, note.title, note.body);
+  }
+  if (becameHT) {
+    await notifyFollowers(db, f.id, "ht", "Devre arası", `${home} ${snap.h1}-${snap.a1} ${away}`);
   }
 
   return false;
