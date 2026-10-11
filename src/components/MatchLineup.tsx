@@ -77,8 +77,10 @@ function currentSide(lu: TeamLineup, events: FixtureEvent[]) {
         subs.push({ minute: e.time.elapsed, extra: e.time.extra, out: slots[idx].player, inn });
         onIds.delete(slots[idx].player.id);
         onIds.add(inn.id);
+        const slotPos = slots[idx].player.position;
+        const position = slotPos === 'GK' && inn.position !== 'GK' ? inn.position : slotPos;
         slots[idx] = {
-          player: { ...inn, grid: slots[idx].player.grid ?? inn.grid ?? null, position: slots[idx].player.position },
+          player: { ...inn, grid: slotPos === 'GK' && inn.position !== 'GK' ? null : (slots[idx].player.grid ?? inn.grid ?? null), position },
           cameOn: true,
           sentOff: false,
         };
@@ -103,7 +105,7 @@ function parseGrid(g?: string | null): { row: number; col: number } | null {
 
 function roleLabel(formation: string, grid?: string | null, pos?: LineupPlayer['position']): string {
   const g = parseGrid(grid);
-  if (!g) {
+  if (!g || (g.row <= 1 && pos !== 'GK')) {
     return pos === 'GK' ? 'KL' : pos === 'DEF' ? 'DF' : pos === 'FWD' ? 'FV' : 'OS';
   }
   if (g.row <= 1) return 'KL';
@@ -128,32 +130,36 @@ function roleLabel(formation: string, grid?: string | null, pos?: LineupPlayer['
 }
 
 function formationRows(formation: string, slots: Slot[]): Slot[][] {
-  const withGrid = slots.filter((s) => parseGrid(s.player.grid));
-  if (withGrid.length >= 8) {
+  const gk = slots.filter((s) => s.player.position === 'GK');
+  const rest = slots.filter((s) => s.player.position !== 'GK');
+  const withGrid = rest.filter((s) => {
+    const g = parseGrid(s.player.grid);
+    return !!g && g.row > 1;
+  });
+  if (withGrid.length >= 7) {
     const rows = new Map<number, Slot[]>();
-    for (const s of slots) {
+    for (const s of rest) {
       const g = parseGrid(s.player.grid);
-      const row = g?.row ?? 99;
+      const row = g && g.row > 1 ? g.row : 3;
       const arr = rows.get(row) ?? [];
       arr.push(s);
       rows.set(row, arr);
     }
-    return [...rows.entries()]
+    const lines = [...rows.entries()]
       .sort((a, b) => b[0] - a[0])
       .map(([, line]) =>
         line.sort((a, b) => (parseGrid(a.player.grid)?.col ?? 0) - (parseGrid(b.player.grid)?.col ?? 0)),
       );
+    return gk.length ? [...lines, gk] : lines;
   }
   const parts = formation.split('-').map(Number).filter((n) => Number.isFinite(n) && n > 0);
-  const gk = slots.slice(0, 1);
-  const rest = slots.slice(1);
   if (parts.length === 4) {
     const [d, m1, m2, f] = parts;
-    return [rest.slice(d + m1 + m2, d + m1 + m2 + f), rest.slice(d + m1, d + m1 + m2), rest.slice(d, d + m1), rest.slice(0, d), gk];
+    return [rest.slice(d + m1 + m2, d + m1 + m2 + f), rest.slice(d + m1, d + m1 + m2), rest.slice(d, d + m1), rest.slice(0, d), gk].filter((r) => r.length);
   }
   if (parts.length === 3) {
     const [d, m, f] = parts;
-    return [rest.slice(d + m, d + m + f), rest.slice(d, d + m), rest.slice(0, d), gk];
+    return [rest.slice(d + m, d + m + f), rest.slice(d, d + m), rest.slice(0, d), gk].filter((r) => r.length);
   }
   const def = rest.filter((s) => s.player.position === 'DEF');
   const mid = rest.filter((s) => s.player.position === 'MID');

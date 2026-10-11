@@ -43,6 +43,9 @@ Deno.serve(async (req) => {
       }
       case "set_schedule": return json(await setSchedule(db, body));
       case "set_fixture_date": return json(await setFixtureDate(db, body));
+      case "set_odd": return json(await setOdd(db, body));
+      case "suspend_odds": return json(await suspendOdds(db, body));
+      case "set_match_stats": return json(await setMatchStats(db, body));
       case "update_settings": return json(await updateSettings(db, body));
       case "import_squads": return json(await importSquads(
         db,
@@ -476,8 +479,9 @@ async function startLeague(db: SupabaseClient, body: Record<string, unknown>) {
 async function rebalanceClock(db: SupabaseClient) {
   const from = new Date(Date.now() + 20 * 60_000).toISOString();
   const { data, error } = await db.from("fixtures")
-    .select("id, date, league_id, home_team_id, away_team_id")
+    .select("id, date, league_id, home_team_id, away_team_id, kickoff_locked")
     .eq("archived", false).eq("is_sim", true).eq("status_short", "NS")
+    .eq("kickoff_locked", false)
     .gte("date", from)
     .order("date")
     .limit(5000);
@@ -976,7 +980,7 @@ function parseTrKickoff(raw: unknown): Date {
 async function setFixtureDate(db: SupabaseClient, body: Record<string, unknown>) {
   const fixtureId = Number(body.fixture_id);
   if (!fixtureId) throw new Error("fixture_id gerekli");
-  const date = snapKickoff(parseTrKickoff(body.date), new Date());
+  const date = snapKickoff(parseTrKickoff(body.date));
   if (date.getTime() < Date.now() - 30_000) throw new Error("Tarih geçmiş olamaz");
   const { data: f, error } = await db.from("fixtures")
     .select("id, status_short, is_sim, archived, home_team_id, away_team_id")
@@ -986,6 +990,7 @@ async function setFixtureDate(db: SupabaseClient, body: Record<string, unknown>)
   if (f.status_short !== "NS") throw new Error("Başlamış maçın tarihi değiştirilemez");
   const { error: upErr } = await db.from("fixtures").update({
     date: date.toISOString(),
+    kickoff_locked: true,
     updated_at: new Date().toISOString(),
   }).eq("id", fixtureId);
   if (upErr) throw upErr;
@@ -1003,8 +1008,9 @@ async function setSchedule(db: SupabaseClient, body: Record<string, unknown>) {
 
   const from = new Date(Date.now() + 15 * 60_000);
   const { data: fx, error: fxErr } = await db.from("fixtures")
-    .select("id, date, round")
+    .select("id, date, round, kickoff_locked")
     .eq("league_id", leagueId).eq("is_sim", true).eq("archived", false).eq("status_short", "NS")
+    .eq("kickoff_locked", false)
     .gte("date", from.toISOString())
     .order("date");
   if (fxErr) throw fxErr;
@@ -1055,4 +1061,96 @@ async function setRating(db: SupabaseClient, body: Record<string, unknown>) {
   if (error) throw error;
   if (data.league_id) await db.from("leagues").update({ odds_dirty_at: new Date().toISOString() }).eq("id", data.league_id);
   return { ok: true, rating: data };
+}
+
+async function setOdd(db: SupabaseClient, body: Record<string, unknown>) {
+  const fixtureId = Number(body.fixture_id);
+  const market = String(body.market ?? "");
+  const selection = String(body.selection ?? "");
+  const line = Number(body.line ?? 0);
+  const odd = Number(body.odd);
+  if (!fixtureId || !market || !selection) throw new Error("fixture_id, market ve selection gerekli");
+  if (!Number.isFinite(odd) || odd < 1.01 || odd > 100) throw new Error("Oran 1.01 ile 100 arasında olmalı");
+  const now = new Date().toISOString();
+  const { data: fx } = await db.from("fixtures").select("odds_locked").eq("id", fixtureId).maybeSingle();
+  const { error } = await db.from("odds").upsert({
+    fixture_id: fixtureId,
+    market,
+    selection,
+    line,
+    odd: Math.round(odd * 100) / 100,
+    suspended: fx?.odds_locked === true,
+    is_live: false,
+    bookmaker: "manual",
+    updated_at: now,
+  }, { onConflict: "fixture_id,market,selection,line" });
+  if (error) throw error;
+  await log(db, "sim-admin", true, `oran ${fixtureId} ${market} ${selection} ${line} → ${odd}`, 0);
+  return { ok: true };
+}
+
+async function suspendOdds(db: SupabaseClient, body: Record<string, unknown>) {
+  const fixtureId = Number(body.fixture_id);
+  if (!fixtureId) throw new Error("fixture_id gerekli");
+  const on = body.suspended !== false;
+  const now = new Date().toISOString();
+  const { error: fErr } = await db.from("fixtures").update({ odds_locked: on, updated_at: now }).eq("id", fixtureId);
+  if (fErr) throw fErr;
+  const { error } = await db.from("odds").update({ suspended: on, updated_at: now }).eq("fixture_id", fixtureId);
+  if (error) throw error;
+  await log(db, "sim-admin", true, on ? `oran askıda ${fixtureId}` : `oran açıldı ${fixtureId}`, 0);
+  return { ok: true, suspended: on };
+}
+
+const STAT_KEYS = new Set([
+  "Ball Possession", "Total Shots", "Shots on Goal", "Shots off Goal", "Blocked Shots",
+  "Corner Kicks", "Offsides", "Fouls", "Yellow Cards", "Red Cards", "Goalkeeper Saves",
+  "Total passes", "Passes accurate", "Passes %",
+]);
+
+async function setMatchStats(db: SupabaseClient, body: Record<string, unknown>) {
+  const fixtureId = Number(body.fixture_id);
+  if (!fixtureId) throw new Error("fixture_id gerekli");
+  if (body.unlock === true) {
+    const { error } = await db.from("fixture_details").update({ stats_locked: false, updated_at: new Date().toISOString() }).eq("fixture_id", fixtureId);
+    if (error) throw error;
+    return { ok: true, stats_locked: false };
+  }
+  const side = body.side === "away" ? 1 : 0;
+  const patch = (body.stats ?? {}) as Record<string, unknown>;
+  const { data: row, error } = await db.from("fixture_details").select("statistics").eq("fixture_id", fixtureId).maybeSingle();
+  if (error) throw error;
+  const statistics = Array.isArray(row?.statistics) ? row.statistics as { statistics?: { type: string; value: number | string | null }[] }[] : [];
+  if (!statistics[side]) throw new Error("Bu maçın istatistiği henüz yok. Maç başlayınca düzenlenebilir.");
+  const list = statistics[side].statistics ?? [];
+  const setVal = (type: string, value: number | string) => {
+    const hit = list.find((s) => s.type === type);
+    if (hit) hit.value = value;
+    else list.push({ type, value });
+  };
+  for (const [type, raw] of Object.entries(patch)) {
+    if (!STAT_KEYS.has(type) || raw === undefined || raw === null || raw === "") continue;
+    if (type === "Ball Possession" || type === "Passes %") {
+      const n = Math.min(90, Math.max(10, Math.round(Number(raw))));
+      setVal(type, type === "Ball Possession" ? `${n}%` : `${n}%`);
+      if (type === "Ball Possession" && statistics[1 - side]?.statistics) {
+        const other = statistics[1 - side].statistics!;
+        const o = other.find((s) => s.type === "Ball Possession");
+        if (o) o.value = `${100 - n}%`;
+        else other.push({ type: "Ball Possession", value: `${100 - n}%` });
+      }
+    } else {
+      const n = Math.max(0, Math.round(Number(raw)));
+      if (!Number.isFinite(n)) continue;
+      setVal(type, n);
+    }
+  }
+  statistics[side].statistics = list;
+  const { error: upErr } = await db.from("fixture_details").update({
+    statistics,
+    stats_locked: true,
+    updated_at: new Date().toISOString(),
+  }).eq("fixture_id", fixtureId);
+  if (upErr) throw upErr;
+  return { ok: true, stats_locked: true };
 }

@@ -47,6 +47,7 @@ interface FixtureRow {
   id: number; league_id: number; season: number; date: string; status_short: string; elapsed: number | null;
   home_team_id: number; away_team_id: number; home_goals: number | null; away_goals: number | null;
   ht_home: number | null; ht_away: number | null;
+  odds_locked?: boolean;
 }
 interface SimMatchRow {
   fixture_id: number; seed: number; scenario: Scenario | null; script: Script | null; kickoff_at: string | null;
@@ -69,6 +70,7 @@ Deno.serve(async (req) => {
   let liveCount = 0, priced = 0;
   const t0 = Date.now();
   try {
+    try { await db.rpc("flush_notification_pushes"); } catch (e) { console.warn(`push flush: ${errMsg(e)}`); }
     const now = new Date();
     const [settings, leagues, dueRes, liveRes] = await Promise.all([
       loadSettings(db),
@@ -155,6 +157,7 @@ Deno.serve(async (req) => {
     // 3) Maç öncesi oranlar (canlı iş uzadıysa sonraya bırak)
     // ------------------------------------------------------------------
     priced = Date.now() - t0 > 45_000 ? 0 : await refreshPrematch(db, leagues, settings, now);
+    try { await db.rpc("flush_notification_pushes"); } catch { /* sıradaki tick */ }
 
     const ms = Date.now() - t0;
     const msg = `canlı ${liveCount}${started.length ? `, başladı ${started.length}` : ""}${finished.length ? `, bitti ${finished.length}` : ""}${priced ? `, oran ${priced}` : ""} (${ms} ms)`;
@@ -235,7 +238,7 @@ async function startMatch(ctx: Ctx, f: FixtureRow, league: LeagueSim, opts?: { s
       ht_home: null, ht_away: null, ft_home: null, ft_away: null, live_odds_at: now.toISOString(), updated_at: now.toISOString(),
     }).eq("id", f.id),
     writeDetails(db, f, script, teams, 0, false),
-    replaceOdds(db, f.id, rows),
+    f.odds_locked ? Promise.resolve() : replaceOdds(db, f.id, rows),
   ]);
   const home = teams.get(f.home_team_id)?.name ?? "Ev";
   const away = teams.get(f.away_team_id)?.name ?? "Dep";
@@ -330,6 +333,8 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
   const newly = full.events.slice(sm.revealed, revealCount);
   const home = teams.get(f.home_team_id)?.name ?? "Ev";
   const away = teams.get(f.away_team_id)?.name ?? "Dep";
+  // Satır hemen yazılır ama deliver_at yüzünden push ve liste skordan sonra gelir.
+  // Sonuçlandırma henüz pending seçimleri görsün diye bildirim, settle'dan önce eklenir.
   for (const e of newly) {
     const note = matchAlert(e, home, away, `${homeGoals}-${awayGoals}`);
     if (note) await notifyFollowers(db, f.id, note.type, note.title, note.body);
@@ -338,7 +343,7 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
     await notifyFollowers(db, f.id, "ht", "Devre arası", `${home} ${snap.h1}-${snap.a1} ${away}`);
   }
 
-  if (!isSuspended && reprice) {
+  if (!isSuspended && reprice && !f.odds_locked) {
     try {
       const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(league), f.league_id);
       const state: LiveState = {
@@ -368,6 +373,7 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
       console.error(`settle ${f.id}: ${errMsg(e)}`);
     }
   }
+
   return false;
 }
 
@@ -501,6 +507,7 @@ async function refreshPrematch(db: SupabaseClient, leagues: Map<number, LeagueSi
   // a) Hiç fiyatlanmamış maçlar
   const { data: fresh } = await db.from("fixtures").select("*")
     .eq("is_sim", true).eq("archived", false).eq("status_short", "NS")
+    .eq("odds_locked", false)
     .lte("date", horizon).is("live_odds_at", null)
     .order("date").limit(PREMATCH_BATCH);
   todo.push(...((fresh ?? []) as FixtureRow[]));
@@ -513,6 +520,7 @@ async function refreshPrematch(db: SupabaseClient, leagues: Map<number, LeagueSi
       if (limit <= 0) break;
       const { data: stale } = await db.from("fixtures").select("*")
         .eq("is_sim", true).eq("archived", false).eq("status_short", "NS").eq("league_id", l.id)
+        .eq("odds_locked", false)
         .lte("date", horizon).lt("live_odds_at", l.odds_dirty_at)
         .order("date").limit(limit);
       const rows = (stale ?? []) as FixtureRow[];
@@ -524,14 +532,20 @@ async function refreshPrematch(db: SupabaseClient, leagues: Map<number, LeagueSi
   }
   if (!todo.length) return 0;
 
-  const teamIds = [...new Set(todo.flatMap((f) => [f.home_team_id, f.away_team_id]))];
+  const open = todo.filter((f) => !f.odds_locked);
+  if (!open.length) return 0;
+  const teamIds = [...new Set(open.flatMap((f) => [f.home_team_id, f.away_team_id]))];
   const ratings = await loadRatings(db, teamIds);
   const allRows: OddRow[] = [];
-  for (const f of todo) {
+  for (const f of open) {
     const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(leagues.get(f.league_id)), f.league_id);
     allRows.push(...priceOdds(f.id, computeProbabilities(exp, PRE_STATE), settings.margin, false));
   }
-  await upsertChunked(db, "odds", allRows as unknown as Record<string, unknown>[], "fixture_id,market,selection,line");
+  const ids = open.map((f) => f.id);
+  const { data: manuals } = await db.from("odds").select("fixture_id, market, selection, line").in("fixture_id", ids).eq("bookmaker", "manual");
+  const keep = new Set((manuals ?? []).map((m) => `${m.fixture_id}|${m.market}|${m.selection}|${Number(m.line)}`));
+  const rows = allRows.filter((r) => !keep.has(`${r.fixture_id}|${r.market}|${r.selection}|${Number(r.line)}`));
+  if (rows.length) await upsertChunked(db, "odds", rows as unknown as Record<string, unknown>[], "fixture_id,market,selection,line");
   await db.from("fixtures").update({ live_odds_at: now.toISOString() }).in("id", todo.map((f) => f.id));
   return todo.length;
 }

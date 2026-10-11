@@ -150,9 +150,14 @@ export default function AdminLiveScoreScreen() {
                       ? `Maç bu skorla oynanır (İY ${sc!.ht_home}-${sc!.ht_away}).`
                       : 'Skor yazılmazsa motor kendi üretir.'}
                 </Muted>
-                <Pressable onPress={() => router.push(`/match/${f.id}`)} hitSlop={8}>
-                  <Muted style={{ fontSize: 11, textAlign: 'center' }}>Maç detayını aç</Muted>
-                </Pressable>
+                <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 16 }}>
+                  <Pressable onPress={() => router.push(`/admin/control/${f.id}`)} hitSlop={8}>
+                    <Muted style={{ fontSize: 11, textAlign: 'center', color: colors.primary }}>Oran / istatistik</Muted>
+                  </Pressable>
+                  <Pressable onPress={() => router.push(`/match/${f.id}`)} hitSlop={8}>
+                    <Muted style={{ fontSize: 11, textAlign: 'center' }}>Maç detayı</Muted>
+                  </Pressable>
+                </View>
               </View>
             );
           }}

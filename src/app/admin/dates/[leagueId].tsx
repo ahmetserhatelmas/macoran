@@ -88,7 +88,7 @@ export default function FixtureDatesScreen() {
           ListHeaderComponent={
             <View style={{ gap: spacing.sm, marginBottom: spacing.sm }}>
               <Muted style={{ fontSize: 12 }}>
-                Bir maça dokunup gün ve saati yazın (Türkiye saati). Sadece başlamamış maçlar taşınır.
+                Bir maça dokunup gün ve saati yazın (Türkiye saati). Bu saat kilitlenir; lig programı onu geri almaz. Sağdaki simge oran ve istatistik içindir.
               </Muted>
               <Input placeholder="Takım veya hafta ara" value={q} onChangeText={setQ} icon="search" />
             </View>
@@ -114,6 +114,9 @@ export default function FixtureDatesScreen() {
                   <TeamLogo uri={f.away.logo} size={18} name={f.away.name} />
                 </View>
               </View>
+              <Pressable onPress={() => router.push(`/admin/control/${f.id}`)} hitSlop={8} style={{ padding: 4 }}>
+                <Ionicons name="options-outline" size={18} color={colors.primary} />
+              </Pressable>
               <Ionicons name="calendar-outline" size={18} color={colors.textDim} />
             </Pressable>
           )}

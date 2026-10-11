@@ -84,12 +84,15 @@ export async function writeDetails(
     };
   };
 
+  const { data: prev } = await db.from("fixture_details").select("stats_locked, statistics").eq("fixture_id", f.id).maybeSingle();
+  const statistics = prev?.stats_locked ? prev.statistics : [statsFor("home", home), statsFor("away", away)];
   const { error } = await db.from("fixture_details").upsert({
     fixture_id: f.id,
     events,
-    statistics: [statsFor("home", home), statsFor("away", away)],
+    statistics,
     lineups: { home: packSide("home", home), away: packSide("away", away) },
     final,
+    stats_locked: prev?.stats_locked === true,
     updated_at: new Date().toISOString(),
   }, { onConflict: "fixture_id" });
   if (error) throw error;

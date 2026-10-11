@@ -154,6 +154,8 @@ export interface AppNotification {
   fixture_id: number | null;
   read_at: string | null;
   created_at: string;
+  /** Bu andan önce listede ve telefonda görünmez */
+  deliver_at?: string | null;
 }
 
 export interface StandingRow {

@@ -126,3 +126,21 @@ export function poissonTable(lambda: number, max: number): number[] {
   t.push(Math.max(0, 1 - sum));
   return t;
 }
+
+/**
+ * Aynı ortalamada daha geniş kuyruk.
+ * Gerçek liglerde 0-0 ve 4-1, dar Poisson'a göre daha sık görülür.
+ * Ölçeklerin ağırlıklı ortalaması 1 olduğu için gol beklentisi değişmez.
+ */
+export function dispersedPoissonTable(lambda: number, max: number): number[] {
+  const scales = [0.52, 1, 1.7];
+  const weights = [0.26, 0.48, 0.26];
+  const mean = scales.reduce((a, s, i) => a + s * weights[i], 0);
+  const tables = scales.map((s) => poissonTable(lambda * (s / mean), max));
+  const out = new Array(max + 1).fill(0);
+  for (let i = 0; i < tables.length; i++) {
+    for (let k = 0; k < tables[i].length; k++) out[k] += weights[i] * tables[i][k];
+  }
+  const sum = out.reduce((a, b) => a + b, 0) || 1;
+  return out.map((p) => p / sum);
+}

@@ -451,10 +451,11 @@ export function useNotifications() {
         .order('created_at', { ascending: false })
         .limit(80);
       if (error) throw error;
-      return (data ?? []) as AppNotification[];
+      const now = Date.now();
+      return ((data ?? []) as AppNotification[]).filter((n) => !n.deliver_at || Date.parse(n.deliver_at) <= now);
     },
     enabled: !!uid,
-    refetchInterval: 20_000,
+    refetchInterval: 8_000,
   });
 }
 

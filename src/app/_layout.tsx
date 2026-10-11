@@ -133,6 +133,7 @@ export default function RootLayout() {
               <Stack.Screen name="admin/live" />
               <Stack.Screen name="admin/scenario/[leagueId]" />
               <Stack.Screen name="admin/dates/[leagueId]" />
+              <Stack.Screen name="admin/control/[fixtureId]" />
             </Stack.Protected>
             <Stack.Protected guard={!session}>
               <Stack.Screen name="(auth)/login" />

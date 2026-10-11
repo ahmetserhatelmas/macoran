@@ -212,11 +212,15 @@ function pickReplacement(
   matchday: Set<number>,
 ): PlayerRow | null {
   const rank = (p: PlayerRow) => (matchday.has(p.api_id ?? -1) ? 2 : 0) + p.talent;
+  if (pos === "GK") {
+    return pool.filter((p) => p.position === "GK" && !taken.has(p.id)).sort((a, b) => rank(b) - rank(a))[0] ?? null;
+  }
   for (const ppos of SIMILAR_POS[pos]) {
+    if (ppos === "GK") continue;
     const cand = pool.filter((p) => p.position === ppos && !taken.has(p.id)).sort((a, b) => rank(b) - rank(a));
     if (cand[0]) return cand[0];
   }
-  return pool.filter((p) => !taken.has(p.id)).sort((a, b) => rank(b) - rank(a))[0] ?? null;
+  return pool.filter((p) => p.position !== "GK" && !taken.has(p.id)).sort((a, b) => rank(b) - rank(a))[0] ?? null;
 }
 
 function pickFromRecent(pool: PlayerRow[], recent: RecentLineup): Lineup {
@@ -249,7 +253,27 @@ function pickFromRecent(pool: PlayerRow[], recent: RecentLineup): Lineup {
     return order.indexOf(a.position) - order.indexOf(b.position);
   });
   const prefer = new Set([...recent.benchApiIds, ...recent.matchdayApiIds]);
-  return { formation: recent.formation, starters: slots.slice(0, 11), bench: fillBench(pool, taken, prefer).map((p) => ref(p)) };
+  const starters = placeKeeper(slots.slice(0, 11), pool);
+  for (const id of [...taken]) if (!starters.some((p) => p.id === id)) taken.delete(id);
+  for (const p of starters) taken.add(p.id);
+  return { formation: recent.formation, starters, bench: fillBench(pool, taken, prefer).map((p) => ref(p)) };
+}
+
+/** Kaleci yalnızca gerçek GK. Defans 1:1 hücresine oturup kaleci görünmesin. */
+function placeKeeper(starters: PlayerRef[], pool: PlayerRow[]): PlayerRef[] {
+  const field = starters.filter((p) => p.position !== "GK");
+  let keeper = starters.find((p) => p.position === "GK") ?? null;
+  if (!keeper) {
+    const row = pool.filter((p) => p.position === "GK").sort((a, b) => b.talent - a.talent)[0];
+    if (row) keeper = ref(row, "1:1");
+  }
+  const xi = keeper ? [{ ...keeper, position: "GK" as Position, grid: "1:1" }, ...field.slice(0, 10)] : field.slice(0, 11);
+  return xi.map((p) => {
+    if (p.position === "GK") return { ...p, grid: "1:1" };
+    const g = parseGrid(p.grid);
+    if (g && g.row <= 1) return { ...p, grid: null };
+    return p;
+  });
 }
 
 export function parseGrid(g?: string | null): { row: number; col: number } | null {
@@ -287,9 +311,12 @@ export function pickLineup(players: PlayerRow[], kickoff: Date, rng: Rng, recent
     }
   }
   const grids = gridsForFormation(f.name, starters.length);
+  const xi = placeKeeper(starters.map((p, i) => ref(p, grids[i] ?? null)), pool);
+  for (const id of [...taken]) if (!xi.some((p) => p.id === id)) taken.delete(id);
+  for (const p of xi) taken.add(p.id);
   return {
     formation: f.name,
-    starters: starters.map((p, i) => ref(p, grids[i] ?? null)),
+    starters: xi,
     bench: fillBench(pool, taken, new Set()).map((p) => ref(p)),
   };
 }
@@ -506,8 +533,16 @@ export function generateScript(inp: GenerateInput): Script {
       away: [sc.ht_away, Math.max(0, sc.ft_away - sc.ht_away)],
     };
   } else {
+    // Maç temposu: bazı maçlar kısır (0-0, 1-0), bazıları açık (3-2, 4-1). Ortalama 1.
+    const tempoScales = [0.52, 1, 1.7];
+    const tempoWeights = [0.26, 0.48, 0.26];
+    const tempoMean = tempoScales.reduce((a, s, i) => a + s * tempoWeights[i], 0);
+    const tempo = (rng.weighted(tempoScales, (_, i) => tempoWeights[i]) ?? 1) / tempoMean;
+    const fh = Math.min(0.62, Math.max(0.32, FIRST_HALF_SHARE + rng.normal(0, 0.06)));
+    const noise = () => Math.min(1.22, Math.max(0.78, Math.exp(rng.normal(0, 0.07))));
     const lam = (side: Side, half: 1 | 2) => {
-      const base = (side === "home" ? inp.exp.lambdaHome : inp.exp.lambdaAway) * (half === 1 ? FIRST_HALF_SHARE : 1 - FIRST_HALF_SHARE);
+      const share = half === 1 ? fh : 1 - fh;
+      const base = (side === "home" ? inp.exp.lambdaHome : inp.exp.lambdaAway) * share * tempo * noise();
       // kırmızı kart: eksik kalan takım zayıflar, rakip güçlenir (kalan süre oranında)
       let mul = 1;
       for (const r of reds) {
@@ -520,9 +555,10 @@ export function generateScript(inp: GenerateInput): Script {
       }
       return base * mul;
     };
+    const cap = (x: number) => Math.min(8, Math.max(0, x));
     goals = {
-      home: [Math.min(6, rng.poisson(lam("home", 1))), Math.min(6, rng.poisson(lam("home", 2)))],
-      away: [Math.min(6, rng.poisson(lam("away", 1))), Math.min(6, rng.poisson(lam("away", 2)))],
+      home: [cap(rng.poisson(lam("home", 1))), cap(rng.poisson(lam("home", 2)))],
+      away: [cap(rng.poisson(lam("away", 1))), cap(rng.poisson(lam("away", 2)))],
     };
   }
 
@@ -631,7 +667,7 @@ export function generateScript(inp: GenerateInput): Script {
             const others = cand.filter((p) => p.id !== scorer.id);
             assist = rng.weighted(others, (p) => POS_ASSIST[p.position] * (0.35 + attr(ts, p, "creativity"))) ?? null;
           }
-          const kind = rng.weighted(["Şık bir vuruş", "Kafa golü", "Yakın mesafeden", "Uzaktan sert şut", "Kontratak sonunda", "Karambolde", "Plase vuruş"], () => 1)!;
+          const kind = goalPhrase(rng, scorer.position, time.minute, !!assist);
           push({ time, side, type: "Goal", detail: "Normal Goal", player: scorer, assist, comments: kind });
         }
         goalTimes[side].push(k);
@@ -772,9 +808,13 @@ export function generateScript(inp: GenerateInput): Script {
 
 function pickSubIn(ts: TeamState, out: PlayerRef, rng: Rng): PlayerRef | null {
   if (!ts.bench.length) return null;
+  if (out.position === "GK") {
+    const gks = ts.bench.filter((b) => b.position === "GK");
+    return gks.length ? rng.weighted(gks, (p) => 0.3 + attr(ts, p, "talent")) ?? gks[0] : null;
+  }
   const same = ts.bench.filter((b) => b.position === out.position);
   const pool = same.length ? same : ts.bench.filter((b) => b.position !== "GK");
-  if (!pool.length) return out.position === "GK" ? ts.bench[0] : null;
+  if (!pool.length) return null;
   return rng.weighted(pool, (p) => 0.3 + attr(ts, p, "talent")) ?? null;
 }
 
@@ -873,9 +913,21 @@ function deriveChanceEvents(script: Script): SimEvent[] {
       const pitch = pitchFromScript(script, side, k);
       const p = pickAttacker(rng, pitch);
       const gk = pitchFromScript(script, opp, k).find((x) => x.position === "GK") ?? oppGk();
-      push(side, k, "Save", gk
-        ? `${p?.name ?? "Oyuncu"} tehlikeli vuruyor, ${gk.name} son anda çıkarıyor`
-        : `${p?.name ?? "Oyuncu"} tehlikeli vuruyor, kaleci son anda çıkarıyor`, p, gk);
+      const who = p?.name ?? "Oyuncu";
+      const saveLine = gk
+        ? rng.pick([
+          `${who} tehlikeli vuruyor, ${gk.name} son anda çıkarıyor`,
+          `${gk.name} köşeye giden şutu kurtarıyor`,
+          `${who} yakın mesafeden vuruyor, ${gk.name} ayaklarıyla kesiyor`,
+          `Şut geliyor, ${gk.name} refleksle topu çıkarıyor`,
+          `${who} plase deniyor, ${gk.name} doğru köşede`,
+        ])
+        : rng.pick([
+          `${who} tehlikeli vuruyor, kaleci son anda çıkarıyor`,
+          `${who} şutu kalecide kalıyor`,
+          `Yakın şut, kaleci ayaklarıyla kesiyor`,
+        ]);
+      push(side, k, "Save", saveLine, p, gk);
     }
 
     const offTarget: number[] = [];
@@ -891,9 +943,19 @@ function deriveChanceEvents(script: Script): SimEvent[] {
       const late = (k >= 85 && k < 100) || k >= 185;
       const roll = rng.next();
       if (roll < 0.16 || (late && roll < 0.32)) {
+        const who = p?.name ?? "Oyuncu";
         push(side, k, "Big Chance", late
-          ? `Kaçan gol! ${p?.name ?? "Oyuncu"} son anda ağları bulamıyor`
-          : `${p?.name ?? "Oyuncu"} net pozisyonda kaleyi ıskalıyor`, p);
+          ? rng.pick([
+            `Kaçan gol! ${who} son anda ağları bulamıyor`,
+            `${who} boş kaleye vuruyor, top az farkla dışarı`,
+            `Son anda müdahale, ${who} tamamlayamıyor`,
+          ])
+          : rng.pick([
+            `${who} net pozisyonda kaleyi ıskalıyor`,
+            `${who} ceza sahasında topu kontrol edemiyor`,
+            `${who} şutunu auta atıyor`,
+            `Bire birde ${who} aşırtamıyor`,
+          ]), p);
       }
     }
 
@@ -907,7 +969,13 @@ function deriveChanceEvents(script: Script): SimEvent[] {
       if (used.has(k) || goalKeys.has(k)) continue;
       const pitch = pitchFromScript(script, side, k);
       const p = pickAttacker(rng, pitch);
-      push(side, k, "Dangerous Attack", `${p?.name ?? "Oyuncu"} ceza sahasına süzülüyor, savunma son anda müdahale ediyor`, p);
+      const who = p?.name ?? "Oyuncu";
+      push(side, k, "Dangerous Attack", rng.pick([
+        `${who} ceza sahasına süzülüyor, savunma son anda müdahale ediyor`,
+        `${who} kanattan bindiriyor, orta kesiliyor`,
+        `Hızlı atak: ${who} içeri giriyor, stoper araya giriyor`,
+        `${who} ceza yayına kadar geliyor, şut bloke`,
+      ]), p);
     }
   }
   const woodPool = woodCandidates.filter((c) => !used.has(c.k));
@@ -1073,7 +1141,52 @@ export const countUpTo = (keys: number[], k: number) => {
   return n;
 };
 
-const GOAL_COMMENTS = ["Şık bir vuruş", "Kafa golü", "Yakın mesafeden", "Uzaktan sert şut", "Kontratak sonunda", "Karambolde", "Plase vuruş"];
+function goalPhrase(rng: Rng, pos: Position, minute: number, assisted: boolean): string {
+  const bank: string[] = [];
+  if (pos === "FWD") {
+    bank.push(
+      "Ceza sahası içinden bitirdi",
+      "Plase vuruşla ağları buldu",
+      "Yakın mesafeden dokundu",
+      "Kaleciyle karşı karşıya kaldı",
+      "Altı pasta tamamladı",
+      "Sağ içten şut çekti",
+      "Sol kanattan içeri kat etti",
+      "Kontratak sonunda soğukkanlı vurdu",
+      "Aşırtma vuruş",
+      "Yakın köşeye sert vurdu",
+    );
+  } else if (pos === "MID") {
+    bank.push(
+      "Ceza sahası dışından vurdu",
+      "Ara pasın ardından tamamladı",
+      "İkinci bölgeden plase çekti",
+      "Orta açıldı, gelişine vurdu",
+      "Uzaktan sert şut",
+      "Korner karambolünde ön direğe yetişti",
+      "Durumdan yararlanıp boş kaleye gönderdi",
+      "Şut-ribanttan döndü, peşinden gitti",
+      "Orta sahadan organize edip bitirdi",
+    );
+  } else if (pos === "DEF") {
+    bank.push(
+      "Kornerde kafa vurdu",
+      "Duran topta yakın mesafeden",
+      "Altı pasta kafa",
+      "Savunmadan çıkıp şut çekti",
+      "Ön direkte kafa",
+      "Serbest vuruş karambolünde",
+    );
+  } else {
+    bank.push("Beklenmedik bir vuruş");
+  }
+  if (minute >= 85) bank.push("Son dakikalarda ağları buldu", "Uzatmada soğukkanlı vurdu");
+  else if (minute >= 70) bank.push("Maçın son bölümünde skoru değiştirdi");
+  if (minute <= 12) bank.push("Maçın erken dakikalarında öne geçirdi");
+  if (assisted) bank.push("Asistle gelen pasla tamamladı", "Pasın ardından tek dokunuş");
+  else if (rng.chance(0.4)) bank.push("Bireysel bir hareketle");
+  return rng.pick(bank);
+}
 
 function isScoringGoal(e: SimEvent) {
   return e.type === "Goal" && e.detail !== "Missed Penalty";
@@ -1134,7 +1247,7 @@ export function applyLiveScore(script: Script, opts: { side: Side; add: boolean;
     detail: "Normal Goal",
     player: scorer,
     assist,
-    comments: rng.pick(GOAL_COMMENTS),
+    comments: goalPhrase(rng, scorer?.position ?? "FWD", opts.time.minute, !!assist),
   });
   events.sort((a, b) => tkey(a.time) - tkey(b.time) || (a.type === "Goal" ? 1 : 0) - (b.type === "Goal" ? 1 : 0));
   const shots = [...script.stats[opts.side].shots, k].sort((a, b) => a - b);
@@ -1172,7 +1285,7 @@ function pushForcedGoal(script: Script, events: SimEvent[], side: Side, k: numbe
     : null;
   events.push({
     time, side, type: "Goal", detail: "Normal Goal", player: scorer, assist,
-    comments: rng.pick(GOAL_COMMENTS),
+    comments: goalPhrase(rng, scorer?.position ?? "FWD", time.minute, !!assist),
     admin: true,
   });
 }

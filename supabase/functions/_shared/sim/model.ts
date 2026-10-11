@@ -5,7 +5,7 @@
 //  - Marj eklenerek oranlar üretilir (maç öncesi ve canlı aynı yol)
 
 import { earlySettleSelection, type Facts, MARKETS, type MarketDef, type MatchPhase, outcome, selectionsOf } from "./markets.ts";
-import { poissonTable } from "./rng.ts";
+import { dispersedPoissonTable, poissonTable } from "./rng.ts";
 
 export interface RatingRow {
   team_id: number;
@@ -76,7 +76,8 @@ export interface Expectation {
 export const FIRST_HALF_SHARE = 0.46;
 export const HOME_BASE = 1.32;
 export const AWAY_BASE = 1.08;
-const K = 0.019;
+/** Güç farkının gollere etkisi. Favori 3-0, zayıf taraf 0-1 görebilmeli. */
+const K = 0.026;
 /** Golün penaltıdan olma payı ve takım başına kaçan penaltı olasılığı (script ile aynı) */
 export const PEN_GOAL_FRAC = 0.06;
 export const MISSED_PEN_PER_TEAM = 0.04;
@@ -276,8 +277,8 @@ function marketLines(m: MarketDef, state: LiveState): number[] {
 
 export function computeProbabilities(exp: Expectation, state: LiveState = PRE_STATE): MarketProbs[] {
   const rem = remaining(exp, state);
-  const th1 = poissonTable(rem.h1, MAX_GOALS), ta1 = poissonTable(rem.a1, MAX_GOALS);
-  const th2 = poissonTable(rem.h2, MAX_GOALS), ta2 = poissonTable(rem.a2, MAX_GOALS);
+  const th1 = dispersedPoissonTable(rem.h1, MAX_GOALS), ta1 = dispersedPoissonTable(rem.a1, MAX_GOALS);
+  const th2 = dispersedPoissonTable(rem.h2, MAX_GOALS), ta2 = dispersedPoissonTable(rem.a2, MAX_GOALS);
   const tc1 = poissonTable(rem.c1, MAX_CORNERS), tc2 = poissonTable(rem.c2, MAX_CORNERS);
 
   type Acc = { win: Map<string, number>; voidMass: number };
