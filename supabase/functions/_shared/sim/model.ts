@@ -124,7 +124,9 @@ export function expectation(home: Strength, away: Strength, leagueId?: number): 
   const lambdaHome = clamp(HOME_BASE * scale * Math.exp(K * (home.att - away.def)), 0.22, 4.8);
   const lambdaAway = clamp(AWAY_BASE * scale * Math.exp(K * (away.att - home.def)), 0.18, 4.2);
   const total = lambdaHome + lambdaAway;
-  const corners = clamp(9.6 + (total - 2.4) * 1.2 + (home.mid - away.mid) * 0.01, 7, 14);
+  const mid = (home.mid + away.mid) / 2;
+  // Düşük tempolu maç 6 korner, açık maç 11–12. Hep 9’a yapışmasın.
+  const corners = clamp(7.6 + (total - 2.4) * 1.7 + (mid - 68) * 0.09, 5.2, 14);
   // En az bir penaltı (atılan ya da kaçan) olasılığı: Poisson(penaltı sayısı)
   const penalty = clamp(1 - Math.exp(-(PEN_GOAL_FRAC * total + 2 * MISSED_PEN_PER_TEAM)), 0.08, 0.5);
   return { lambdaHome, lambdaAway, corners, penalty, home, away };
@@ -143,6 +145,9 @@ export interface LiveState {
   corners: number; corners1h: number;
   penalty: boolean;
   redHome: number; redAway: number;
+  /** Canlı baskı. Yoksa oran yalnız skora bakar. */
+  shotsHome?: number; shotsAway?: number;
+  cornersHome?: number; cornersAway?: number;
 }
 
 export const PRE_STATE: LiveState = {
@@ -175,9 +180,21 @@ function matchIntensity(exp: Expectation, s: LiveState): number {
   return clamp(1 + (raw - 1) * fade, 0.55, 1);
 }
 
+/** Şut ve korner üstünlüğü kalan gol beklentisini o tarafa kaydırır. */
+function pressureMul(s: LiveState): { h: number; a: number } {
+  if (s.phase === "pre" || s.phase === "FT") return { h: 1, a: 1 };
+  const h = (s.shotsHome ?? 0) + (s.cornersHome ?? 0) * 1.5;
+  const a = (s.shotsAway ?? 0) + (s.cornersAway ?? 0) * 1.5;
+  const n = h + a;
+  if (n < 8) return { h: 1, a: 1 };
+  const tilt = clamp((h / n - 0.5) * 0.55, -0.16, 0.16);
+  return { h: 1 + tilt, a: 1 - tilt };
+}
+
 function remaining(exp: Expectation, s: LiveState): Remaining {
-  const lh1 = exp.lambdaHome * FIRST_HALF_SHARE, la1 = exp.lambdaAway * FIRST_HALF_SHARE;
-  const lh2 = exp.lambdaHome * (1 - FIRST_HALF_SHARE), la2 = exp.lambdaAway * (1 - FIRST_HALF_SHARE);
+  const press = pressureMul(s);
+  const lh1 = exp.lambdaHome * FIRST_HALF_SHARE * press.h, la1 = exp.lambdaAway * FIRST_HALF_SHARE * press.a;
+  const lh2 = exp.lambdaHome * (1 - FIRST_HALF_SHARE) * press.h, la2 = exp.lambdaAway * (1 - FIRST_HALF_SHARE) * press.a;
   const c1 = exp.corners * FIRST_HALF_SHARE, c2 = exp.corners * (1 - FIRST_HALF_SHARE);
   const pace = matchIntensity(exp, s);
   const cornerPace = Math.sqrt(pace);
@@ -246,8 +263,32 @@ function extraOuLines(floor: number, maxLine: number): number[] {
   return lines;
 }
 
-function marketLines(m: MarketDef, state: LiveState): number[] {
+/** Beklenen toplamın çevresinde .5 çizgiler. Alt sınır maça göre 4.5'e inebilir. */
+function bandLines(center: number, below: number, above: number, min: number, max: number): number[] {
+  const main = Math.floor(center) + 0.5;
+  const out: number[] = [];
+  for (let d = -below; d <= above; d++) {
+    const x = Math.round((main + d) * 10) / 10;
+    if (x + 1e-9 >= min && x <= max + 1e-9) out.push(x);
+  }
+  return out.length ? out : [Math.min(max, Math.max(min, main))];
+}
+
+function marketLines(m: MarketDef, state: LiveState, exp: Expectation): number[] {
   const live = state.phase === "1H" || state.phase === "HT" || state.phase === "2H";
+  if (m.code === "CORNOU") {
+    if (!live) return bandLines(exp.corners, 1, 2, 4.5, 15.5);
+    const floor = Math.max(4.5, state.corners + 0.5);
+    const center = Math.max(exp.corners, state.corners + 2.2);
+    return bandLines(center, 2, 2, floor, 16.5);
+  }
+  if (m.code === "HTCORNOU") {
+    const exp1 = exp.corners * FIRST_HALF_SHARE;
+    if (!live) return bandLines(exp1, 1, 1, 1.5, 8.5);
+    const floor = Math.max(1.5, state.corners1h + 0.5);
+    const center = Math.max(exp1, state.corners1h + 1.4);
+    return bandLines(center, 1, 2, floor, 9.5);
+  }
   if (!live) return m.lines;
   if (m.kind === "goals") {
     let cur: number | null = null;
@@ -262,17 +303,23 @@ function marketLines(m: MarketDef, state: LiveState): number[] {
     }
     return extraOuLines(0.5, Math.min(12.5, cur + 3.5));
   }
-  if (m.code === "CORNOU") {
-    const floor = m.lines[0] ?? 8.5;
-    const baseMax = m.lines[m.lines.length - 1] ?? 11.5;
-    return extraOuLines(floor, Math.min(24.5, Math.max(baseMax, state.corners + 3.5)));
-  }
-  if (m.code === "HTCORNOU") {
-    const floor = m.lines[0] ?? 3.5;
-    const baseMax = m.lines[m.lines.length - 1] ?? 5.5;
-    return extraOuLines(floor, Math.min(14.5, Math.max(baseMax, state.corners1h + 3.5)));
-  }
   return m.lines;
+}
+
+/**
+ * Erken golde bir sonraki üst çizgisi (1 gol → 1.5 Üst) neredeyse kesin ise pazarı kapat.
+ * Düşük tempolu maçta kapatma; oranı çok kısalt.
+ */
+function earlyOverObvious(exp: Expectation, state: LiveState, rem: Remaining, line: number): boolean {
+  if (state.phase !== "1H" || state.t > 15) return false;
+  const goals = state.h1 + state.a1 + state.h2 + state.a2;
+  if (goals < 1) return false;
+  if (line + 1e-9 < goals || line > goals + 0.51) return false;
+  const left = rem.h1 + rem.a1 + rem.h2 + rem.a2;
+  const total = exp.lambdaHome + exp.lambdaAway;
+  if (state.t <= 8) return true;
+  if (total >= 2.35 && left >= 1.2) return true;
+  return left >= 1.75;
 }
 
 export function computeProbabilities(exp: Expectation, state: LiveState = PRE_STATE): MarketProbs[] {
@@ -289,7 +336,7 @@ export function computeProbabilities(exp: Expectation, state: LiveState = PRE_ST
   const corner1hMarkets: { m: MarketDef; line: number }[] = [];
   const penMarkets: { m: MarketDef; line: number }[] = [];
   for (const m of MARKETS) {
-    for (const line of marketLines(m, state)) {
+    for (const line of marketLines(m, state, exp)) {
       accs.set(key(m, line), { win: new Map(), voidMass: 0 });
       const entry = { m, line };
       if (m.kind === "goals") goalMarkets.push(entry);
@@ -354,7 +401,7 @@ export function computeProbabilities(exp: Expectation, state: LiveState = PRE_ST
 
   const out: MarketProbs[] = [];
   for (const m of MARKETS) {
-    for (const line of marketLines(m, state)) {
+    for (const line of marketLines(m, state, exp)) {
       const acc = accs.get(key(m, line))!;
       const live = 1 - acc.voidMass;
       const sels = selectionsOf(m, line);
@@ -377,6 +424,17 @@ export function computeProbabilities(exp: Expectation, state: LiveState = PRE_ST
           // İki yönlü pazarda neredeyse kesin seçim = pazar bitti (2-0'da 0.5 Alt 10.00 açılmaz).
           // MS gibi çok seçeneklide %97 favori tüm pazarı kapatmasın.
           if (p >= 1 - 1e-6 || (twoWay && p > twoWayClose)) decided = true;
+        }
+      }
+      if (!decided && m.code === "OU" && earlyOverObvious(exp, state, rem, line)) {
+        decided = true;
+      } else if (!decided && m.code === "OU" && state.phase === "1H" && state.t <= 15) {
+        const goals = state.h1 + state.a1 + state.h2 + state.a2;
+        const pO = probs.get("O") ?? 0;
+        if (goals >= 1 && line + 1e-9 >= goals && line <= goals + 0.51 && pO > 0 && pO < 0.9) {
+          const lifted = Math.min(0.9, Math.max(pO, 0.86));
+          probs.set("O", lifted);
+          probs.set("U", 1 - lifted);
         }
       }
       out.push({ code: m.code, line, probs, decided });

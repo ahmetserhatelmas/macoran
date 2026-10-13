@@ -7,7 +7,7 @@ import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-nativ
 import { STATUS_META } from '@/components/BetCard';
 import { Badge } from '@/components/ui';
 import { dateTime, money, odd as fmtOdd } from '@/lib/format';
-import { canBet, humanizeError, marketTitle, selectionLabel } from '@/lib/markets';
+import { canBet, humanizeError, isLive, marketTitle, selectionLabel } from '@/lib/markets';
 import { supabase } from '@/lib/supabase';
 import { colors, radius, spacing } from '@/lib/theme';
 import { useBetslip } from '@/store/betslip';
@@ -21,6 +21,9 @@ export function SharedCouponCard({ coupon }: { coupon: SharedCoupon }) {
   const [busy, setBusy] = useState(false);
   const meta = STATUS_META[coupon.status];
   const sels = coupon.selections ?? [];
+  const pickLive = (s: (typeof sels)[number]) =>
+    s.status === 'pending' && (s.is_live || (!!s.fixture_status && isLive(s.fixture_status)));
+  const live = sels.some(pickLive);
 
   const refresh = () => qc.invalidateQueries({ queryKey: ['coupon-feed'] });
 
@@ -112,7 +115,10 @@ export function SharedCouponCard({ coupon }: { coupon: SharedCoupon }) {
           <Text style={styles.user}>{coupon.username}</Text>
           <Text style={styles.date}>{dateTime(coupon.created_at)}</Text>
         </View>
-        <Badge text={meta.label} color={meta.bg} textColor={meta.color} />
+        <View style={styles.badges}>
+          {live ? <Badge text="Canlı" color="rgba(239,68,68,0.15)" textColor={colors.live} /> : null}
+          <Badge text={meta.label} color={meta.bg} textColor={meta.color} />
+        </View>
       </View>
 
       {coupon.note ? <Text style={styles.note}>{coupon.note}</Text> : null}
@@ -133,6 +139,7 @@ export function SharedCouponCard({ coupon }: { coupon: SharedCoupon }) {
                 </Text>
                 <Text style={styles.pick} numberOfLines={1}>
                   {marketTitle(s.market, s.line)}: {selectionLabel(s.market, s.selection, s.line, s.home_name ?? undefined, s.away_name ?? undefined)}
+                  {pickLive(s) ? '  · Canlı' : ''}
                   {s.result_home !== null && s.result_away !== null ? `  · ${s.result_home}-${s.result_away}` : ''}
                 </Text>
               </View>
@@ -217,6 +224,7 @@ const styles = StyleSheet.create({
   avatarTxt: { color: colors.text, fontWeight: '800' },
   user: { color: colors.text, fontWeight: '800', fontSize: 14 },
   date: { color: colors.textMuted, fontSize: 12, marginTop: 1 },
+  badges: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   note: { color: colors.text, paddingHorizontal: spacing.md, paddingBottom: spacing.sm, fontSize: 14 },
   sels: { paddingHorizontal: spacing.md, gap: spacing.sm, paddingBottom: spacing.md },
   sel: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },

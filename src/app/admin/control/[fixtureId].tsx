@@ -175,9 +175,7 @@ export default function MatchControlScreen() {
           <View style={styles.card}>
             <Text style={styles.title}>İstatistik</Text>
             <Muted style={{ fontSize: 12 }}>
-              {fixture.data?.stats_locked
-                ? 'Kilitli: motor bu sayıları ezmez.'
-                : 'Maç başladıysa buradan düzeltebilirsin. Kayıt kilidi açar.'}
+              Maç içindeki korner ve şut buradan değişir. 8 yazdıysan 9 yapınca oran hemen kayar.
             </Muted>
             {STATS.map((s) => (
               <View key={s.type} style={styles.statRow}>

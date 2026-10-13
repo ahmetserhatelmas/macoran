@@ -1,6 +1,7 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { AdminScorePad } from '@/components/AdminScorePad';
 import { BetslipBar } from '@/components/BetslipBar';
@@ -13,7 +14,7 @@ import { Badge, EmptyState, Header, IconButton, Loading, Muted, Screen } from '@
 import { ago, dateTime, dayjs } from '@/lib/format';
 import { interpolateClock, useLiveNow } from '@/lib/liveClock';
 import { canBet, groupOdds, hideDecidedOdds, isFinished, isLive, liveBettingLocked, MARKET_CATEGORIES, selectionLabel, statusLabel } from '@/lib/markets';
-import { useFixture, useFixtureDetail } from '@/lib/queries';
+import { simAdmin, useFixture, useFixtureDetail } from '@/lib/queries';
 import { colors, radius, spacing } from '@/lib/theme';
 import { useAuth } from '@/store/auth';
 import { useBetslip } from '@/store/betslip';
@@ -28,6 +29,8 @@ export default function MatchScreen() {
   const fixtureId = Number(id);
   const { data: f, isLoading } = useFixture(fixtureId);
   const isAdmin = useAuth((s) => s.profile?.is_admin);
+  const qc = useQueryClient();
+  const statBusy = useRef(false);
   const toggle = useBetslip((s) => s.toggle);
   const selections = useBetslip((s) => s.selections);
   const syncOdds = useBetslip((s) => s.syncOdds);
@@ -162,7 +165,28 @@ export default function MatchScreen() {
             {detail.isLoading ? (
               <Loading />
             ) : (
-              <MatchStats stats={detail.data?.statistics ?? []} homeId={f.home_team_id} homeName={f.home.name} awayName={f.away.name} live={live} />
+              <MatchStats
+                stats={detail.data?.statistics ?? []}
+                homeId={f.home_team_id}
+                homeName={f.home.name}
+                awayName={f.away.name}
+                live={live}
+                onAdjust={isAdmin && f.is_sim && live ? async (side, stat, value) => {
+                  if (statBusy.current) return;
+                  statBusy.current = true;
+                  try {
+                    await simAdmin('bump_stat', { fixture_id: f.id, side, stat, value });
+                    await Promise.all([
+                      qc.invalidateQueries({ queryKey: ['fixture-detail', f.id] }),
+                      qc.invalidateQueries({ queryKey: ['fixture', f.id] }),
+                    ]);
+                  } catch (e) {
+                    Alert.alert('İstatistik', e instanceof Error ? e.message : String(e));
+                  } finally {
+                    statBusy.current = false;
+                  }
+                } : undefined}
+              />
             )}
             {detail.data?.updated_at ? (
               <Muted style={{ fontSize: 11, textAlign: 'center', marginTop: spacing.sm }}>

@@ -436,7 +436,7 @@ function normalizeShared(raw: SharedCoupon): SharedCoupon {
   };
 }
 
-export function useCouponFeed(filter: CouponFeedFilter) {
+export function useCouponFeed(filter: CouponFeedFilter, enabled = true) {
   const uid = useAuth((s) => s.session?.user.id);
   return useQuery({
     queryKey: ['coupon-feed', filter, uid],
@@ -446,7 +446,31 @@ export function useCouponFeed(filter: CouponFeedFilter) {
       const rows = (Array.isArray(data) ? data : []) as SharedCoupon[];
       return rows.map(normalizeShared);
     },
-    enabled: !!uid,
+    enabled: !!uid && enabled,
+    refetchInterval: 20_000,
+  });
+}
+
+export type RankBoard = 'day' | 'week' | 'total' | 'loss' | 'coupon';
+
+export interface RankRow {
+  rank: number;
+  username: string;
+  profit: number;
+  mine: boolean;
+}
+
+export function useCouponRanks(board: RankBoard, enabled = true) {
+  const uid = useAuth((s) => s.session?.user.id);
+  return useQuery({
+    queryKey: ['coupon-ranks', board, uid],
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc('coupon_ranks', { p_board: board, p_limit: 40 });
+      if (error) throw error;
+      const rows = (Array.isArray(data) ? data : []) as RankRow[];
+      return rows.map((r) => ({ ...r, rank: Number(r.rank), profit: Number(r.profit), mine: !!r.mine }));
+    },
+    enabled: !!uid && enabled,
     refetchInterval: 20_000,
   });
 }

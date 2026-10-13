@@ -1169,6 +1169,37 @@ export const countUpTo = (keys: number[], k: number) => {
   return n;
 };
 
+/** Şu ana kadarki sayıyı adminin yazdığı sayıya çeker. freeze ise bundan sonra kendiliğinden artmaz. */
+export function resizeRevealed(keys: number[], nowKey: number, want: number, freeze = false): number[] {
+  const cap = Math.max(0, Math.min(30, Math.round(want)));
+  const past = keys.filter((k) => k <= nowKey).sort((a, b) => a - b);
+  const future = freeze ? [] : keys.filter((k) => k > nowKey).sort((a, b) => a - b);
+  const used = new Set<number>([...past, ...future]);
+  while (past.length < cap) {
+    let add = nowKey;
+    while (used.has(add) && add > 1) add--;
+    if (used.has(add) || (nowKey >= 100 && add < 100)) {
+      add = nowKey;
+      while (used.has(add)) add++;
+    }
+    used.add(add);
+    past.push(add);
+  }
+  while (past.length > cap) past.pop();
+  return [...past, ...future].sort((a, b) => a - b);
+}
+
+/** Canlı baskı: çok şut ve korner kullanan tarafın oranını oynatır. */
+export function livePressure(script: Script, k: number) {
+  const n = (side: Side, field: "shots" | "sot" | "corners") => countUpTo(script.stats[side][field], k);
+  return {
+    shotsHome: n("home", "shots") + n("home", "sot"),
+    shotsAway: n("away", "shots") + n("away", "sot"),
+    cornersHome: n("home", "corners"),
+    cornersAway: n("away", "corners"),
+  };
+}
+
 function pickFresh(rng: Rng, bank: string[], used?: Set<string>): string {
   const fresh = used ? bank.filter((s) => !used.has(s)) : bank;
   const choice = rng.pick(fresh.length ? fresh : bank);

@@ -13,7 +13,7 @@ import { type Facts, settleSelection } from "../_shared/sim/markets.ts";
 import { computeProbabilities, type LiveState, type OddRow, PRE_STATE, priceOdds } from "../_shared/sim/model.ts";
 import { hashSeed } from "../_shared/sim/rng.ts";
 import { writeDetails } from "../_shared/sim/details.ts";
-import { generateScript, isOddsTriggerEvent, isPenaltyAward, pendingPenaltyKick, type Scenario, type Script, type SimEvent, snapshot } from "../_shared/sim/script.ts";
+import { generateScript, isOddsTriggerEvent, isPenaltyAward, livePressure, pendingPenaltyKick, type Scenario, type Script, type SimEvent, snapshot } from "../_shared/sim/script.ts";
 import { fetchRecentLineup } from "../_shared/sim/squads.ts";
 import { ApiFootball } from "../_shared/api.ts";
 import {
@@ -334,14 +334,19 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
     console.error(`details ${f.id}: ${errMsg(e)}`);
   }
 
+  let board: Awaited<ReturnType<typeof lockedBoard>> = null;
+  try { board = await lockedBoard(db, f.id); } catch { /* script korneri kullanılır */ }
+
   if (!isSuspended && reprice && !f.odds_locked) {
     try {
       const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(league), f.league_id);
+      const press = board?.press ?? livePressure(script, clock.key);
       const state: LiveState = {
         phase: clock.phase, t: clock.abs,
         h1: snap.h1, a1: snap.a1, h2: snap.h2, a2: snap.a2,
-        corners: snap.corners, corners1h: snap.corners1h, penalty: snap.penalty,
+        corners: board?.corners ?? snap.corners, corners1h: snap.corners1h, penalty: snap.penalty,
         redHome: snap.redHome, redAway: snap.redAway,
+        ...press,
       };
       const rows = priceOdds(f.id, computeProbabilities(exp, state), settings.live_margin, true);
       await withTimeout(replaceOdds(db, f.id, rows), 8_000, "odds");
@@ -358,7 +363,7 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
     try {
       await settleLiveDecided(db, f.id, {
         h1: snap.h1, a1: snap.a1, h2: snap.h2, a2: snap.a2,
-        corners: snap.corners, corners1h: snap.corners1h, penalty: snap.penalty,
+        corners: board?.corners ?? snap.corners, corners1h: snap.corners1h, penalty: snap.penalty,
       }, clock.phase, homeGoals, awayGoals);
     } catch (e) {
       console.error(`settle ${f.id}: ${errMsg(e)}`);
@@ -598,6 +603,31 @@ function matchAlert(e: SimEvent, home: string, away: string, score: string): { t
     };
   }
   return null;
+}
+
+function boardNum(list: { type: string; value: number | string | null }[] | undefined, type: string) {
+  const raw = list?.find((s) => s.type === type)?.value;
+  if (raw == null || raw === "") return null;
+  const n = Number(String(raw).replace("%", ""));
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Adminin kilitlediği korner/şut tabelası. Oran script'i değil bu sayıyı kullanır. */
+async function lockedBoard(db: SupabaseClient, fixtureId: number) {
+  const { data, error } = await db.from("fixture_details").select("statistics, stats_locked").eq("fixture_id", fixtureId).maybeSingle();
+  if (error || data?.stats_locked !== true || !Array.isArray(data.statistics)) return null;
+  const sides = data.statistics as { statistics?: { type: string; value: number | string | null }[] }[];
+  const h = boardNum(sides[0]?.statistics, "Corner Kicks");
+  const a = boardNum(sides[1]?.statistics, "Corner Kicks");
+  if (h == null || a == null) return null;
+  const sh = boardNum(sides[0]?.statistics, "Total Shots") ?? 0;
+  const sa = boardNum(sides[1]?.statistics, "Total Shots") ?? 0;
+  const oh = boardNum(sides[0]?.statistics, "Shots on Goal") ?? 0;
+  const oa = boardNum(sides[1]?.statistics, "Shots on Goal") ?? 0;
+  return {
+    corners: h + a,
+    press: { shotsHome: sh + oh, shotsAway: sa + oa, cornersHome: h, cornersAway: a },
+  };
 }
 
 async function notifyFollowers(db: SupabaseClient, fixtureId: number, type: string, title: string, body: string) {

@@ -10,7 +10,7 @@ import { matchClock } from "../_shared/sim/clock.ts";
 import { computeProbabilities, type LiveState, PRE_STATE, priceOdds } from "../_shared/sim/model.ts";
 import { hashSeed, Rng } from "../_shared/sim/rng.ts";
 import { writeDetails } from "../_shared/sim/details.ts";
-import { dropAdminGoal, elapsedToKey, generateScript, injectLiveGoals, rewriteRemainingScore, snapshot, type Scenario, type ScenarioGoal, type Script } from "../_shared/sim/script.ts";
+import { countUpTo, dropAdminGoal, elapsedToKey, generateScript, injectLiveGoals, livePressure, resizeRevealed, rewriteRemainingScore, snapshot, type Scenario, type ScenarioGoal, type Script, type StatTimeline } from "../_shared/sim/script.ts";
 import { fixtureExpectation, loadLeagues, loadPlayers, loadRatings, loadSettings, lockLiveBetting, mapLimit, replaceOdds, settleLiveDecided, totalRounds } from "../_shared/sim/store.ts";
 import {
   type ApiStandingRowLite, buildPlayersFromApi, buildSyntheticPlayers, fetchRecentLineup, fetchSquad, ratingsFromStandings, saveTeamPlayers,
@@ -46,6 +46,7 @@ Deno.serve(async (req) => {
       case "set_odd": return json(await setOdd(db, body));
       case "suspend_odds": return json(await suspendOdds(db, body));
       case "set_match_stats": return json(await setMatchStats(db, body));
+      case "bump_stat": return json(await bumpStat(db, body));
       case "update_settings": return json(await updateSettings(db, body));
       case "import_squads": return json(await importSquads(
         db,
@@ -865,11 +866,13 @@ async function setLiveScore(db: SupabaseClient, body: Record<string, unknown>) {
   const teams = new Map((teamRows ?? []).map((t) => [t.id as number, t as TeamInfo]));
   const league = leagues.get(f.league_id);
   const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(league), f.league_id);
+  const press = livePressure(script, clock.key);
   const state: LiveState = {
     phase: clock.phase, t: clock.abs,
     h1: snap.h1, a1: snap.a1, h2: snap.h2, a2: snap.a2,
     corners: snap.corners, corners1h: snap.corners1h, penalty: snap.penalty,
     redHome: snap.redHome, redAway: snap.redAway,
+    ...press,
   };
   const rows = priceOdds(fixtureId, computeProbabilities(exp, state), settings.live_margin, true);
   const scoredNow = home !== curH || away !== curA;
@@ -1080,6 +1083,13 @@ const STAT_KEYS = new Set([
   "Total passes", "Passes accurate", "Passes %",
 ]);
 
+const SCRIPT_STAT: Record<string, keyof Pick<StatTimeline, "corners" | "shots" | "sot" | "fouls">> = {
+  "Corner Kicks": "corners",
+  "Total Shots": "shots",
+  "Shots on Goal": "sot",
+  "Fouls": "fouls",
+};
+
 async function setMatchStats(db: SupabaseClient, body: Record<string, unknown>) {
   const fixtureId = Number(body.fixture_id);
   if (!fixtureId) throw new Error("fixture_id gerekli");
@@ -1088,8 +1098,12 @@ async function setMatchStats(db: SupabaseClient, body: Record<string, unknown>) 
     if (error) throw error;
     return { ok: true, stats_locked: false };
   }
-  const side = body.side === "away" ? 1 : 0;
+  const sideName = body.side === "away" ? "away" as const : "home" as const;
   const patch = (body.stats ?? {}) as Record<string, unknown>;
+  const applied = await applyLiveStats(db, fixtureId, sideName, patch);
+  if (applied) return applied;
+
+  const side = sideName === "away" ? 1 : 0;
   const { data: row, error } = await db.from("fixture_details").select("statistics").eq("fixture_id", fixtureId).maybeSingle();
   if (error) throw error;
   const statistics = Array.isArray(row?.statistics) ? row.statistics as { statistics?: { type: string; value: number | string | null }[] }[] : [];
@@ -1104,7 +1118,7 @@ async function setMatchStats(db: SupabaseClient, body: Record<string, unknown>) 
     if (!STAT_KEYS.has(type) || raw === undefined || raw === null || raw === "") continue;
     if (type === "Ball Possession" || type === "Passes %") {
       const n = Math.min(90, Math.max(10, Math.round(Number(raw))));
-      setVal(type, type === "Ball Possession" ? `${n}%` : `${n}%`);
+      setVal(type, `${n}%`);
       if (type === "Ball Possession" && statistics[1 - side]?.statistics) {
         const other = statistics[1 - side].statistics!;
         const o = other.find((s) => s.type === "Ball Possession");
@@ -1125,4 +1139,135 @@ async function setMatchStats(db: SupabaseClient, body: Record<string, unknown>) 
   }).eq("fixture_id", fixtureId);
   if (upErr) throw upErr;
   return { ok: true, stats_locked: true };
+}
+
+async function bumpStat(db: SupabaseClient, body: Record<string, unknown>) {
+  const fixtureId = Number(body.fixture_id);
+  if (!fixtureId) throw new Error("fixture_id gerekli");
+  const sideName = body.side === "away" ? "away" as const : "home" as const;
+  const stat = body.stat === "shots" ? "Total Shots" : body.stat === "sot" ? "Shots on Goal" : "Corner Kicks";
+  const value = Math.max(0, Math.round(Number(body.value)));
+  if (!Number.isFinite(value)) throw new Error("Sayı gerekli");
+  const applied = await applyLiveStats(db, fixtureId, sideName, { [stat]: value });
+  if (!applied) throw new Error("Korner canlı maçta değiştirilir");
+  return applied;
+}
+
+/** Canlı script'e işler, tabelayı ve oranı hemen günceller. Script yoksa null. */
+async function applyLiveStats(
+  db: SupabaseClient,
+  fixtureId: number,
+  side: "home" | "away",
+  patch: Record<string, unknown>,
+) {
+  const [{ data: f, error: fErr }, { data: sm, error: smErr }, settings] = await Promise.all([
+    db.from("fixtures").select("id, home_team_id, away_team_id, league_id, odds_locked, status_short").eq("id", fixtureId).maybeSingle(),
+    db.from("sim_matches").select("script, kickoff_at, suspended_until").eq("fixture_id", fixtureId).maybeSingle(),
+    loadSettings(db),
+  ]);
+  if (fErr) throw fErr;
+  if (smErr) throw smErr;
+  if (!f?.home_team_id || !sm?.script || !sm.kickoff_at) return null;
+  const script = sm.script as Script;
+  const now = new Date();
+  const clock = matchClock(new Date(sm.kickoff_at), now, script.stoppage, settings);
+  if (clock.phase === "pre" || clock.phase === "FT") return null;
+
+  const { data: det } = await db.from("fixture_details").select("statistics, stats_locked").eq("fixture_id", fixtureId).maybeSingle();
+  if (det?.stats_locked === true && Array.isArray(det.statistics)) {
+    const sides = det.statistics as { statistics?: { type: string; value: number | string | null }[] }[];
+    for (const [idx, name] of [[0, "home"], [1, "away"]] as const) {
+      const list = sides[idx]?.statistics ?? [];
+      for (const [type, field] of Object.entries(SCRIPT_STAT)) {
+        const raw = list.find((s) => s.type === type)?.value;
+        const n = Number(String(raw ?? "").replace("%", ""));
+        if (!Number.isFinite(n)) continue;
+        script.stats[name][field] = resizeRevealed(script.stats[name][field], clock.key, n, field === "corners");
+      }
+    }
+  }
+
+  const timeline = script.stats[side];
+  for (const [type, raw] of Object.entries(patch)) {
+    if (raw === undefined || raw === null || raw === "") continue;
+    const field = SCRIPT_STAT[type];
+    if (field) {
+      const n = Math.max(0, Math.round(Number(raw)));
+      if (!Number.isFinite(n)) continue;
+      timeline[field] = resizeRevealed(timeline[field], clock.key, n, field === "corners");
+      if (field === "corners") {
+        const other = side === "home" ? "away" : "home";
+        const cur = countUpTo(script.stats[other].corners, clock.key);
+        script.stats[other].corners = resizeRevealed(script.stats[other].corners, clock.key, cur, true);
+      }
+      continue;
+    }
+    if (type === "Ball Possession") {
+      const n = Math.min(90, Math.max(10, Math.round(Number(raw))));
+      if (!Number.isFinite(n)) continue;
+      script.stats.home.possession = side === "home" ? n : 100 - n;
+      script.stats.away.possession = 100 - script.stats.home.possession;
+    }
+  }
+
+  const snap = snapshot(script, clock.key);
+  const press = livePressure(script, clock.key);
+  const [{ data: teamRows }, ratings, leagues] = await Promise.all([
+    db.from("teams").select("id, name, logo").in("id", [f.home_team_id, f.away_team_id]),
+    loadRatings(db, [f.home_team_id, f.away_team_id]),
+    loadLeagues(db),
+  ]);
+  const teams = new Map((teamRows ?? []).map((t) => [t.id as number, t as TeamInfo]));
+  const league = leagues.get(f.league_id);
+  const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(league), f.league_id);
+  const state: LiveState = {
+    phase: clock.phase, t: clock.abs,
+    h1: snap.h1, a1: snap.a1, h2: snap.h2, a2: snap.a2,
+    corners: snap.corners, corners1h: snap.corners1h, penalty: snap.penalty,
+    redHome: snap.redHome, redAway: snap.redAway,
+    ...press,
+  };
+  const held = !!sm.suspended_until && new Date(sm.suspended_until) > now;
+  const rows = priceOdds(fixtureId, computeProbabilities(exp, state), settings.live_margin, true, held || f.odds_locked === true);
+
+  const statistics = Array.isArray(det?.statistics)
+    ? det.statistics as { statistics?: { type: string; value: number | string | null }[] }[]
+    : null;
+  if (statistics?.[0] && statistics?.[1]) {
+    const put = (idx: number, type: string, value: number | string) => {
+      const list = statistics[idx].statistics ?? (statistics[idx].statistics = []);
+      const hit = list.find((s) => s.type === type);
+      if (hit) hit.value = value;
+      else list.push({ type, value });
+    };
+    put(0, "Corner Kicks", countUpTo(script.stats.home.corners, clock.key));
+    put(1, "Corner Kicks", countUpTo(script.stats.away.corners, clock.key));
+    for (const [type, raw] of Object.entries(patch)) {
+      if (type === "Corner Kicks" || raw === undefined || raw === null || raw === "") continue;
+      const n = Math.round(Number(raw));
+      if (!Number.isFinite(n)) continue;
+      put(side === "home" ? 0 : 1, type, type === "Ball Possession" ? `${n}%` : n);
+    }
+  }
+
+  await Promise.all([
+    db.from("sim_matches").update({
+      script, odds_minute: clock.abs,
+    }).eq("fixture_id", fixtureId),
+    statistics
+      ? db.from("fixture_details").update({
+        statistics, stats_locked: true, updated_at: now.toISOString(),
+      }).eq("fixture_id", fixtureId)
+      : writeDetails(db, { id: fixtureId, home_team_id: f.home_team_id, away_team_id: f.away_team_id }, script, teams, clock.key, false),
+    replaceOdds(db, fixtureId, rows),
+    db.from("fixtures").update({ live_odds_at: held ? null : now.toISOString(), updated_at: now.toISOString() }).eq("id", fixtureId),
+  ]);
+  if (clock.phase === "1H" || clock.phase === "HT" || clock.phase === "2H") {
+    await settleLiveDecided(db, fixtureId, {
+      h1: snap.h1, a1: snap.a1, h2: snap.h2, a2: snap.a2,
+      corners: snap.corners, corners1h: snap.corners1h, penalty: snap.penalty,
+    }, clock.phase, snap.h1 + snap.h2, snap.a1 + snap.a2);
+  }
+  await log(db, "sim-admin", true, `istatistik ${fixtureId} ${side}: korner ${snap.corners}`, 0);
+  return { ok: true, corners: snap.corners, stats_locked: true };
 }
