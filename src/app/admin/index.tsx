@@ -65,6 +65,17 @@ export default function AdminScreen() {
               <Ionicons name="chevron-forward" size={18} color={colors.textDim} />
             </Pressable>
 
+            <Pressable onPress={() => router.push('/admin/showcase')} style={({ pressed }) => [styles.simCard, pressed && { opacity: 0.85 }]}>
+              <View style={[styles.simIcon, { backgroundColor: 'rgba(251,191,36,0.12)' }]}>
+                <Ionicons name="trophy" size={20} color={colors.gold} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.simTitle}>Vitrin kupon</Text>
+                <Muted style={{ fontSize: 12 }}>Sahte hesapla tutan veya yatan kupon bas. Akışta ve sıralamada görünür.</Muted>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textDim} />
+            </Pressable>
+
             <Pressable onPress={() => router.push('/admin/live')} style={({ pressed }) => [styles.simCard, pressed && { opacity: 0.85 }]}>
               <View style={[styles.simIcon, { backgroundColor: 'rgba(239,68,68,0.12)' }]}>
                 <Ionicons name="football" size={20} color={colors.live} />

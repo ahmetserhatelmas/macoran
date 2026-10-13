@@ -15,6 +15,7 @@ import { fixtureExpectation, loadLeagues, loadPlayers, loadRatings, loadSettings
 import {
   type ApiStandingRowLite, buildPlayersFromApi, buildSyntheticPlayers, fetchRecentLineup, fetchSquad, ratingsFromStandings, saveTeamPlayers,
 } from "../_shared/sim/squads.ts";
+import { showcaseCreateCoupon, showcaseCreateUser, showcaseDeleteCoupon, showcaseDeleteUser, showcaseList, showcaseRename, showcaseUpdateCoupon } from "../_shared/sim/showcase.ts";
 
 const SECOND_TIER = new Set([204, 40, 79, 141, 136, 62]);
 /** Avrupa kupaları: takımın "ana ligi" sayılmaz, güç puanlarını ezmez */
@@ -59,6 +60,13 @@ Deno.serve(async (req) => {
       case "start_test_matches": return json(await startTestMatches(db));
       case "stop_test_matches": return json(await stopTestMatches(db));
       case "set_live_score": return json(await setLiveScore(db, body));
+      case "showcase_list": return json(await showcaseList(db));
+      case "showcase_create_user": return json(await showcaseCreateUser(db, body));
+      case "showcase_rename": return json(await showcaseRename(db, body));
+      case "showcase_delete_user": return json(await showcaseDeleteUser(db, body));
+      case "showcase_create_coupon": return json(await showcaseCreateCoupon(db, body));
+      case "showcase_update_coupon": return json(await showcaseUpdateCoupon(db, body));
+      case "showcase_delete_coupon": return json(await showcaseDeleteCoupon(db, body));
       default: return json({ error: `unknown action: ${action}` }, 400);
     }
   } catch (e) {
