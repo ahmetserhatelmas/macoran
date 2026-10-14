@@ -1,10 +1,21 @@
 // Vitrin hesabı: akışta ve sıralamada görünen, adminin açıp sildiği kuponlar.
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
-type LegIn = { fixture_id?: unknown; won?: unknown };
+type LegIn = { fixture_id?: unknown; won?: unknown; outcome?: unknown; market?: unknown; selection?: unknown; line?: unknown };
 
 const FINISHED = new Set(["FT", "AET", "PEN"]);
+const LIVE = new Set(["1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE"]);
+const OPEN = new Set(["NS", "TBD"]);
 
+const CATALOG: Record<string, { lines: number[]; picks: string[]; odds: Record<string, number> }> = {
+  "1X2": { lines: [0], picks: ["1", "X", "2"], odds: { "1": 1.72, X: 3.4, "2": 2.15 } },
+  HT1X2: { lines: [0], picks: ["1", "X", "2"], odds: { "1": 2.1, X: 2.35, "2": 2.6 } },
+  OU: { lines: [0.5, 1.5, 2.5, 3.5], picks: ["O", "U"], odds: { O: 1.85, U: 1.95 } },
+  HTOU: { lines: [0.5, 1.5, 2.5], picks: ["O", "U"], odds: { O: 1.7, U: 2.05 } },
+  CORNOU: { lines: [6.5, 7.5, 8.5, 9.5, 10.5], picks: ["O", "U"], odds: { O: 1.9, U: 1.9 } },
+  HTCORNOU: { lines: [3.5, 4.5, 5.5], picks: ["O", "U"], odds: { O: 1.85, U: 1.9 } },
+  BTTS: { lines: [0], picks: ["YES", "NO"], odds: { YES: 1.75, NO: 2.0 } },
+};
 function istanbulStart(kind: "day" | "week"): string {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Europe/Istanbul",
@@ -43,7 +54,7 @@ export async function showcaseList(db: SupabaseClient) {
   if (!ids.length) return { accounts: [] };
   const { data: bets, error: bErr } = await db
     .from("bets")
-    .select("id, user_id, stake, payout, total_odd, status, settled_at, created_at, bet_selections(home_name, away_name, selection, odd, status, result_home, result_away)")
+    .select("id, user_id, stake, payout, total_odd, status, settled_at, created_at, bet_selections(home_name, away_name, market, selection, line, odd, status, result_home, result_away)")
     .in("user_id", ids)
     .order("created_at", { ascending: false });
   if (bErr) throw bErr;
@@ -76,11 +87,13 @@ export async function showcaseList(db: SupabaseClient) {
             note: share?.note ?? null,
             show_stake: share?.show_stake !== false,
             legs: ((b.bet_selections ?? []) as {
-              home_name: string | null; away_name: string | null; selection: string; odd: number;
+              home_name: string | null; away_name: string | null; market: string; selection: string; line: number; odd: number;
               status: string; result_home: number | null; result_away: number | null;
             }[]).map((s) => ({
               home: s.home_name,
               away: s.away_name,
+              market: s.market,
+              line: Number(s.line ?? 0),
               selection: s.selection,
               odd: Number(s.odd),
               status: s.status,
@@ -152,11 +165,13 @@ async function payoutToLead(db: SupabaseClient, board: "day" | "week" | "total",
   return Math.max(50, Math.round((top - mine + 250) * 100) / 100);
 }
 
-function resultPick(home: number, away: number, won: boolean): "1" | "X" | "2" {
-  const actual: "1" | "X" | "2" = home > away ? "1" : home < away ? "2" : "X";
-  if (won) return actual;
-  if (actual === "X") return "1";
-  return actual === "1" ? "2" : "1";
+function pickLeg(raw: LegIn) {
+  const spec = CATALOG[String(raw.market ?? "")] ?? CATALOG["1X2"];
+  const market = CATALOG[String(raw.market ?? "")] ? String(raw.market) : "1X2";
+  const line = spec.lines.includes(Number(raw.line)) ? Number(raw.line) : spec.lines[0];
+  const selection = spec.picks.includes(String(raw.selection ?? "")) ? String(raw.selection) : spec.picks[0];
+  const odd = spec.odds[selection] ?? 1.9;
+  return { market, line, selection, odd };
 }
 
 export async function showcaseCreateCoupon(db: SupabaseClient, body: Record<string, unknown>) {
@@ -175,31 +190,38 @@ export async function showcaseCreateCoupon(db: SupabaseClient, body: Record<stri
   const byId = new Map((fixtures ?? []).map((f) => [Number(f.id), f]));
   const legs = legsIn.map((raw) => {
     const f = byId.get(Number(raw.fixture_id));
-    if (!f || !FINISHED.has(String(f.status_short)) || f.home_goals == null || f.away_goals == null) {
-      throw new Error("Sadece sonucu belli maçlar eklenebilir");
+    const status = String(f?.status_short ?? "");
+    if (!f || (!FINISHED.has(status) && !LIVE.has(status) && !OPEN.has(status))) {
+      throw new Error("Sadece canlı, başlamamış veya bitmiş maç eklenebilir");
     }
-    const won = raw.won !== false;
+    const live = LIVE.has(status);
+    const asked = raw.outcome === "won" || raw.outcome === "lost" || raw.outcome === "pending"
+      ? raw.outcome
+      : raw.won === false ? "lost" : live || OPEN.has(status) ? "pending" : "won";
+    const outcome = asked === "pending" && FINISHED.has(status) ? "won" : asked;
+    const picked = pickLeg(raw);
     const home = f.home as { name?: string } | { name?: string }[] | null;
     const away = f.away as { name?: string } | { name?: string }[] | null;
     const league = f.league as { name?: string } | { name?: string }[] | null;
-    const homeName = Array.isArray(home) ? home[0]?.name : home?.name;
-    const awayName = Array.isArray(away) ? away[0]?.name : away?.name;
-    const leagueName = Array.isArray(league) ? league[0]?.name : league?.name;
     return {
       fixture_id: Number(f.id),
-      won,
-      selection: resultPick(Number(f.home_goals), Number(f.away_goals), won),
-      home_name: homeName ?? "",
-      away_name: awayName ?? "",
-      league_name: leagueName ?? "",
+      outcome,
+      live,
+      ...picked,
+      home_name: (Array.isArray(home) ? home[0]?.name : home?.name) ?? "",
+      away_name: (Array.isArray(away) ? away[0]?.name : away?.name) ?? "",
+      league_name: (Array.isArray(league) ? league[0]?.name : league?.name) ?? "",
       fixture_date: f.date as string,
-      result_home: Number(f.home_goals),
-      result_away: Number(f.away_goals),
+      result_home: f.home_goals == null ? null : Number(f.home_goals),
+      result_away: f.away_goals == null ? null : Number(f.away_goals),
     };
   });
-  const allWon = legs.every((l) => l.won);
+  const anyLost = legs.some((l) => l.outcome === "lost");
+  const anyPending = legs.some((l) => l.outcome === "pending");
+  const allWon = !anyLost && !anyPending;
+  const betStatus = anyLost ? "lost" : anyPending ? "pending" : "won";
   const place = body.place === "day" || body.place === "week" || body.place === "total" ? body.place : null;
-  if (place && !allWon) throw new Error("Sıralamaya girmek için bütün maçların tutması gerekir");
+  if (place && !allWon) throw new Error("Sıralamaya girmek için bütün seçimlerin tutması gerekir");
   let payout = 0;
   if (allWon) {
     if (place) payout = Math.max(stake + 50, await payoutToLead(db, place, userId, null));
@@ -208,33 +230,34 @@ export async function showcaseCreateCoupon(db: SupabaseClient, body: Record<stri
       if (!Number.isFinite(payout) || payout < stake) throw new Error("Kazanç, tutardan büyük olmalı");
     }
   }
-  const totalOdd = allWon ? Math.round((payout / stake) * 1000) / 1000 : 1.8;
-  const eachOdd = Math.round(Math.pow(totalOdd, 1 / legs.length) * 1000) / 1000;
+  const quoted = legs.reduce((p, l) => p * l.odd, 1);
+  const totalOdd = allWon ? Math.round((payout / stake) * 1000) / 1000 : Math.round(quoted * 1000) / 1000;
+  const scale = allWon && quoted > 0 ? totalOdd / quoted : 1;
   const now = new Date().toISOString();
   const { data: bet, error: betErr } = await db.from("bets").insert({
     user_id: userId,
     stake,
     total_odd: totalOdd,
     potential_win: Math.round(stake * totalOdd * 100) / 100,
-    payout: allWon ? payout : 0,
-    status: allWon ? "won" : "lost",
+    payout: allWon ? payout : anyLost ? 0 : null,
+    status: betStatus,
     created_at: now,
-    settled_at: now,
+    settled_at: betStatus === "pending" ? null : now,
   }).select("id").single();
   if (betErr) throw betErr;
   const { error: selErr } = await db.from("bet_selections").insert(legs.map((l) => ({
     bet_id: bet.id,
     fixture_id: l.fixture_id,
-    market: "1X2",
+    market: l.market,
     selection: l.selection,
-    line: 0,
-    odd: eachOdd,
-    is_live: false,
+    line: l.line,
+    odd: Math.round(l.odd * scale * 1000) / 1000,
+    is_live: l.live,
     home_name: l.home_name,
     away_name: l.away_name,
     league_name: l.league_name,
     fixture_date: l.fixture_date,
-    status: l.won ? "won" : "lost",
+    status: l.outcome,
     result_home: l.result_home,
     result_away: l.result_away,
   })));
@@ -247,7 +270,7 @@ export async function showcaseCreateCoupon(db: SupabaseClient, body: Record<stri
     show_stake: body.show_stake !== false,
   });
   if (shareErr) throw shareErr;
-  return { ok: true, bet_id: bet.id, status: allWon ? "won" : "lost", payout: allWon ? payout : 0 };
+  return { ok: true, bet_id: bet.id, status: betStatus, payout: allWon ? payout : 0 };
 }
 
 export async function showcaseUpdateCoupon(db: SupabaseClient, body: Record<string, unknown>) {
