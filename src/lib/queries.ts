@@ -91,7 +91,7 @@ export function useFixture(id: number) {
       return normalizeFixture(data as unknown as FixtureWithRelations);
     },
     enabled: Number.isFinite(id),
-    refetchInterval: (q) => (q.state.data && LIVE_STATUSES.includes(q.state.data.status_short) ? 2_000 : 60_000),
+    refetchInterval: (q) => (q.state.data && LIVE_STATUSES.includes(q.state.data.status_short) ? 2_000 : 20_000),
   });
 }
 

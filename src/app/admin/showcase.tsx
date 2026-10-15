@@ -55,17 +55,18 @@ type DraftLeg = {
   label: string;
   score: string;
   live: boolean;
+  open: boolean;
   market: string;
   line: number;
   selection: string;
   outcome: Outcome;
 };
 
-function rollMarket(live: boolean): Pick<DraftLeg, 'market' | 'line' | 'selection' | 'outcome'> {
+function rollMarket(open: boolean): Pick<DraftLeg, 'market' | 'line' | 'selection' | 'outcome'> {
   const m = MARKETS[Math.floor(Math.random() * MARKETS.length)];
   const line = m.lines[Math.floor(Math.random() * m.lines.length)];
   const selection = m.picks[Math.floor(Math.random() * m.picks.length)].sel;
-  return { market: m.market, line, selection, outcome: live ? 'pending' : 'won' };
+  return { market: m.market, line, selection, outcome: open ? 'pending' : 'won' };
 }
 type Place = '' | 'day' | 'week' | 'total';
 
@@ -262,11 +263,12 @@ function Composer({ busy, onCreate }: { busy: boolean; onCreate: (body: Record<s
   return (
     <View style={styles.coupon}>
       <Text style={styles.title}>Kupon ekle</Text>
-      <Muted style={{ fontSize: 12 }}>Canlı veya bitmiş maç ekle. Pazarı sen seç ya da rastgele bas. Canlı maç bekliyor kalır, kazanmış görünmez.</Muted>
+      <Muted style={{ fontSize: 12 }}>Canlı ve maç öncesi kupon bekler. Tuttu ve yattı yalnız sonucu belli maçta çıkar.</Muted>
       <Input placeholder="Maç ara" value={q} onChangeText={setQ} />
       {shown.map((f) => {
         const label = `${nameOf(f.home)} - ${nameOf(f.away)}`;
         const live = isLive(f.status_short);
+        const open = f.status_short === 'NS' || f.status_short === 'TBD';
         const score = f.home_goals == null ? '' : `  ${f.home_goals}-${f.away_goals}`;
         return (
           <Pressable
@@ -277,7 +279,8 @@ function Composer({ busy, onCreate }: { busy: boolean; onCreate: (body: Record<s
               label,
               score: score.trim(),
               live,
-              ...rollMarket(live),
+              open,
+              ...rollMarket(open || live),
             }])}
             style={styles.pick}
           >
@@ -292,7 +295,7 @@ function Composer({ busy, onCreate }: { busy: boolean; onCreate: (body: Record<s
           <View key={l.key} style={styles.legBox}>
             <View style={styles.row}>
               <Text style={[styles.leg, { flex: 1 }]}>{l.label}{l.score ? `  ${l.score}` : ''}{l.live ? '  · Canlı' : ''}</Text>
-              <Pressable onPress={() => patch(l.key, rollMarket(l.live))}><Text style={styles.meta}>Rastgele</Text></Pressable>
+              <Pressable onPress={() => patch(l.key, rollMarket(l.open || l.live))}><Text style={styles.meta}>Rastgele</Text></Pressable>
               <Pressable onPress={() => setLegs((rows) => rows.filter((r) => r.key !== l.key))}><Text style={styles.meta}>Sil</Text></Pressable>
             </View>
             <View style={styles.places}>
@@ -318,13 +321,15 @@ function Composer({ busy, onCreate }: { busy: boolean; onCreate: (body: Record<s
                 </Pressable>
               ))}
             </View>
-            <View style={styles.places}>
-              {(l.live ? (['pending', 'won', 'lost'] as Outcome[]) : (['won', 'lost'] as Outcome[])).map((o) => (
-                <Pressable key={o} onPress={() => patch(l.key, { outcome: o })} style={[styles.place, l.outcome === o && styles.placeOn]}>
-                  <Text style={[styles.placeTxt, l.outcome === o && { color: colors.bg }]}>{o === 'pending' ? 'Bekliyor' : o === 'won' ? 'Tuttu' : 'Yattı'}</Text>
-                </Pressable>
-              ))}
-            </View>
+            {l.open ? <Muted style={{ fontSize: 12 }}>Maç başlamadı. Kupon bekliyor kalır.</Muted> : (
+              <View style={styles.places}>
+                {(l.live ? (['pending', 'won', 'lost'] as Outcome[]) : (['won', 'lost'] as Outcome[])).map((o) => (
+                  <Pressable key={o} onPress={() => patch(l.key, { outcome: o })} style={[styles.place, l.outcome === o && styles.placeOn]}>
+                    <Text style={[styles.placeTxt, l.outcome === o && { color: colors.bg }]}>{o === 'pending' ? 'Bekliyor' : o === 'won' ? 'Tuttu' : 'Yattı'}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
           </View>
         );
       })}

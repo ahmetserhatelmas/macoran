@@ -198,7 +198,7 @@ export async function showcaseCreateCoupon(db: SupabaseClient, body: Record<stri
     const asked = raw.outcome === "won" || raw.outcome === "lost" || raw.outcome === "pending"
       ? raw.outcome
       : raw.won === false ? "lost" : live || OPEN.has(status) ? "pending" : "won";
-    const outcome = asked === "pending" && FINISHED.has(status) ? "won" : asked;
+    const outcome = OPEN.has(status) ? "pending" : asked === "pending" && FINISHED.has(status) ? "won" : asked;
     const picked = pickLeg(raw);
     const home = f.home as { name?: string } | { name?: string }[] | null;
     const away = f.away as { name?: string } | { name?: string }[] | null;

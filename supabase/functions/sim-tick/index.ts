@@ -7,7 +7,7 @@
 //  4) Maç öncesi oranları üret / güç değiştiğinde yenile
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { adminClient, apiKey, authorize, errMsg, json, log, upsertChunked } from "../_shared/db.ts";
-import { matchClock } from "../_shared/sim/clock.ts";
+import { matchClock, type Clock } from "../_shared/sim/clock.ts";
 import { computeStandings, TEST_LEAGUE_ID, type TeamInfo } from "../_shared/sim/league.ts";
 import { type Facts, settleSelection } from "../_shared/sim/markets.ts";
 import { computeProbabilities, type LiveState, type OddRow, PRE_STATE, priceOdds } from "../_shared/sim/model.ts";
@@ -48,6 +48,7 @@ interface FixtureRow {
   home_team_id: number; away_team_id: number; home_goals: number | null; away_goals: number | null;
   ht_home: number | null; ht_away: number | null;
   odds_locked?: boolean;
+  live_odds_at?: string | null;
 }
 interface SimMatchRow {
   fixture_id: number; seed: number; scenario: Scenario | null; script: Script | null; kickoff_at: string | null;
@@ -103,6 +104,10 @@ Deno.serve(async (req) => {
     ]);
     if (smRes.error) throw smRes.error;
     const ctx: Ctx = { db, settings, leagues, teams, ratings, now };
+    if (liveRows.length) {
+      await db.from("fixtures").update({ live_odds_at: now.toISOString() })
+        .eq("is_sim", true).in("status_short", LIVE).not("live_odds_at", "is", null);
+    }
     const smMap = new Map((smRes.data ?? []).map((s) => [Number((s as SimMatchRow).fixture_id), s as SimMatchRow]));
 
     // ------------------------------------------------------------------
@@ -317,7 +322,9 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
     await lockLiveBetting(db, f.id, suspendedUntil, now);
   }
   const isSuspended = waitingKick || (!!suspendedUntil && suspendedUntil > now);
-  const reprice = !trigger && !waitingKick && !isSuspended && (clock.abs !== sm.odds_minute || suspendedUntil !== null);
+  const oddsAge = f.live_odds_at ? now.getTime() - new Date(f.live_odds_at).getTime() : 99_000;
+  const halfMoving = clock.phase === "1H" || clock.phase === "2H";
+  const reprice = !trigger && !waitingKick && !isSuspended && (clock.abs !== sm.odds_minute || suspendedUntil !== null || (halfMoving && oddsAge > 20_000));
 
   const smUpdate: Record<string, unknown> = { revealed: revealCount, last_minute: clock.abs };
   if (isSuspended) smUpdate.suspended_until = suspendedUntil!.toISOString();
@@ -342,7 +349,7 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
       const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(league), f.league_id);
       const press = board?.press ?? livePressure(script, clock.key);
       const state: LiveState = {
-        phase: clock.phase, t: clock.abs,
+        phase: clock.phase, t: pricingMinute(new Date(sm.kickoff_at!), now, clock, settings, script.stoppage),
         h1: snap.h1, a1: snap.a1, h2: snap.h2, a2: snap.a2,
         corners: board?.corners ?? snap.corners, corners1h: snap.corners1h, penalty: snap.penalty,
         redHome: snap.redHome, redAway: snap.redAway,
@@ -357,6 +364,8 @@ async function advanceMatch(ctx: Ctx, f: FixtureRow, sm: SimMatchRow): Promise<b
     } catch (e) {
       console.error(`odds ${f.id}: ${errMsg(e)}`);
     }
+  } else if (!isSuspended && !trigger && !waitingKick && !f.odds_locked) {
+    await db.from("fixtures").update({ live_odds_at: now.toISOString() }).eq("id", f.id);
   }
 
   if (clock.phase === "1H" || clock.phase === "HT" || clock.phase === "2H") {
@@ -538,6 +547,19 @@ async function refreshPrematch(db: SupabaseClient, leagues: Map<number, LeagueSi
       }
     }
   }
+  // c) Maç öncesi oran bir kez yazılınca donmasın: 90 sn'den eski olanları kaydır
+  if (todo.length < PREMATCH_BATCH) {
+    const seen = new Set(todo.map((f) => f.id));
+    const cutoff = new Date(now.getTime() - 90_000).toISOString();
+    const { data: aging } = await db.from("fixtures").select("*")
+      .eq("is_sim", true).eq("archived", false).eq("status_short", "NS")
+      .eq("odds_locked", false)
+      .lte("date", horizon).lt("live_odds_at", cutoff)
+      .order("date").limit(PREMATCH_BATCH - todo.length);
+    for (const row of (aging ?? []) as FixtureRow[]) {
+      if (!seen.has(row.id)) todo.push(row);
+    }
+  }
   if (!todo.length) return 0;
 
   const open = todo.filter((f) => !f.odds_locked);
@@ -547,6 +569,7 @@ async function refreshPrematch(db: SupabaseClient, leagues: Map<number, LeagueSi
   const allRows: OddRow[] = [];
   for (const f of open) {
     const exp = fixtureExpectation(ratings, f.home_team_id, f.away_team_id, totalRounds(leagues.get(f.league_id)), f.league_id);
+    if (f.live_odds_at) nudgePrematch(exp, f.id, f.date, now);
     allRows.push(...priceOdds(f.id, computeProbabilities(exp, PRE_STATE), settings.margin, false));
   }
   const ids = open.map((f) => f.id);
@@ -561,6 +584,29 @@ async function refreshPrematch(db: SupabaseClient, leagues: Map<number, LeagueSi
 async function loadTeams(db: SupabaseClient, ids: number[]): Promise<Map<number, TeamInfo>> {
   const { data } = await db.from("teams").select("id, name, logo").in("id", ids);
   return new Map((data ?? []).map((t) => [t.id as number, t as TeamInfo]));
+}
+
+function pricingMinute(kickoff: Date, now: Date, clock: Clock, settings: SimSettings, stoppage: { h1?: number; h2?: number } | null | undefined): number {
+  const spm = Math.max(1, settings.seconds_per_minute);
+  const st1 = Math.max(1, Math.min(12, Number(stoppage?.h1) || 3));
+  const st2 = Math.max(1, Math.min(12, Number(stoppage?.h2) || 5));
+  const s = Math.max(0, (now.getTime() - kickoff.getTime()) / 1000);
+  const firstEnd = (45 + st1) * spm;
+  const htEnd = firstEnd + Math.max(0, settings.halftime_seconds);
+  if (clock.phase === "1H") return Math.min(45 + st1, s / spm);
+  if (clock.phase === "2H") return Math.min(90 + st2, 45 + Math.max(0, s - htEnd) / spm);
+  return clock.abs;
+}
+
+function nudgePrematch(exp: { lambdaHome: number; lambdaAway: number; corners: number }, fixtureId: number, kickoff: string, now: Date) {
+  const bucket = Math.floor(now.getTime() / 90_000);
+  const a = Math.sin(fixtureId * 0.017 + bucket);
+  const b = Math.cos(fixtureId * 0.011 + bucket * 1.3);
+  const hours = (new Date(kickoff).getTime() - now.getTime()) / 3_600_000;
+  const amp = hours < 3 ? 0.06 : hours < 12 ? 0.04 : 0.025;
+  exp.lambdaHome = Math.max(0.15, exp.lambdaHome * (1 + a * amp));
+  exp.lambdaAway = Math.max(0.12, exp.lambdaAway * (1 + b * amp * 0.85));
+  exp.corners = Math.max(4.5, exp.corners * (1 + ((a + b) / 2) * amp));
 }
 
 function eventMinute(e: SimEvent): string {
